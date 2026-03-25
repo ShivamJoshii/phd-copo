@@ -11,6 +11,9 @@ requires-python = ">=3.10"
 authors = [{ name = "Codex" }]
 dependencies = []
 
+[project.optional-dependencies]
+ui = ["streamlit>=1.30"]
+
 [project.scripts]
 copo-map = "copo_mapper.cli:main"
 
