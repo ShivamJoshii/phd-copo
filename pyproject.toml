@@ -16,6 +16,7 @@ ui = ["streamlit>=1.30"]
 
 [project.scripts]
 copo-map = "copo_mapper.cli:main"
+copo-attainment = "copo_mapper.attainment_cli:main"
 
 [tool.setuptools.packages.find]
 include = ["copo_mapper*"]

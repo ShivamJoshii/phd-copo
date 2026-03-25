@@ -43,6 +43,23 @@ Outputs:
 - `outputs/pair_predictions.csv`
 - `outputs/matrix.csv`
 
+
+### Dynamic-size example (more than 3 COs/POs)
+
+The pipeline is fully dynamic and processes **all** CO and PO items from input JSON files.
+If input has `N` COs and `M` POs, output pair rows = `N × M`.
+
+Example with 4 COs and 5 POs:
+
+```bash
+python -m copo_mapper.cli --co-file examples/co_large.json --po-file examples/po_large.json --out-dir outputs_large
+```
+
+Expected outputs:
+- `outputs_large/pair_predictions.csv` with `20` rows (4×5)
+- `outputs_large/matrix.csv` with full 4x5 mapping grid
+
+
 ## Input format
 
 `co.json`:
@@ -146,3 +163,31 @@ git checkout -b main
 git push -u origin main
 git checkout work
 ```
+
+
+## Stage 2: Attainment Analysis Engine
+
+This stage consumes:
+- CO attainment input (`ma_attainment`, `ea_attainment`, `indirect_attainment`)
+- mapping matrix from Stage 1 (`co_id,PO1,PO2,...`)
+- configuration weights and target levels
+
+### Formulas
+
+- `DirectCO = (MA * ma_weight) + (EA * ea_weight)`
+- `FinalCO = (DirectCO * direct_weight) + (Indirect * indirect_weight)`
+- `COScaled = FinalCO * 3`
+- `PO = sum(FinalCO_i * Map_ij) / sum(Map_ij)`
+- `POScaled = PO * 3`
+
+### Run Stage 2 CLI
+
+```bash
+python -m copo_mapper.attainment_cli   --co-attainment-file examples/co_attainment.json   --mapping-matrix-file examples/mapping_matrix.csv   --config-file examples/attainment_config.json   --out-dir attainment_outputs
+```
+
+Outputs:
+- `attainment_outputs/co_attainment_summary.csv`
+- `attainment_outputs/po_attainment_summary.csv`
+- `attainment_outputs/target_achievement.csv`
+- `attainment_outputs/course_summary.json`

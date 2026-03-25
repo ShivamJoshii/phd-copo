@@ -1,0 +1,8 @@
+{
+  "ma_weight": 0.4,
+  "ea_weight": 0.6,
+  "direct_weight": 0.8,
+  "indirect_weight": 0.2,
+  "co_target_level": 1.4,
+  "po_target_level": 1.4
+}
