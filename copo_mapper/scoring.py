@@ -30,11 +30,11 @@ def score_pair(co_text: str, po_text: str, semantic_similarity: float) -> PairSc
         + 0.2 * max(0.0, 1 - (bloom_gap / 5))
     )
 
-    if composite >= 0.72:
+    if composite >= 0.50:
         label = 3
-    elif composite >= 0.52:
+    elif composite >= 0.30:
         label = 2
-    elif composite >= 0.32:
+    elif composite >= 0.10:
         label = 1
     else:
         label = 0

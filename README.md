@@ -78,3 +78,71 @@ Outputs:
 3. Add trainable XGBoost classifier on labeled faculty data.
 4. Build review UI/API for human corrections and feedback loop.
 
+
+
+
+## Streamlit UI
+
+Launch the browser UI with:
+
+```bash
+pip install streamlit
+streamlit run streamlit_app.py
+```
+
+Then in the app:
+1. Upload `CO` JSON and `PO` JSON files.
+2. Click **Run Mapping**.
+3. Inspect the color-coded CO-PO matrix.
+4. Select a CO and PO to view detailed prediction info.
+5. Use export buttons to download `pair_predictions.csv` and `matrix.csv`.
+
+Pairwise mapping threshold scale used by the scorer:
+- `0` for `0.00 <= confidence < 0.10`
+- `1` for `0.10 <= confidence < 0.30`
+- `2` for `0.30 <= confidence < 0.50`
+- `3` for `confidence >= 0.50`
+
+## How to test
+
+### 1) Fast smoke test (no installs)
+
+```bash
+python -m compileall copo_mapper
+python -m copo_mapper.cli --co-file examples/co.json --po-file examples/po.json --out-dir outputs
+```
+
+You should see:
+
+- `Saved pair predictions: outputs/pair_predictions.csv`
+- `Saved matrix: outputs/matrix.csv`
+
+### 2) Run unit test
+
+```bash
+python -m unittest discover -s tests -p "test_*.py" -v
+```
+
+This executes a temporary-file smoke test that validates the end-to-end pipeline and output shape.
+
+
+## Create a Pull Request
+
+If you want to open a PR from `work` to `main`:
+
+```bash
+git checkout work
+git push -u origin work
+```
+
+Then open a PR in your Git host UI with:
+- **base branch:** `main`
+- **compare branch:** `work`
+
+If `main` does not exist yet, create and push it first:
+
+```bash
+git checkout -b main
+git push -u origin main
+git checkout work
+```
