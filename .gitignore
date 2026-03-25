@@ -2,4 +2,3 @@ __pycache__/
 *.pyc
 outputs/
 .venv/
-attainment_outputs/
