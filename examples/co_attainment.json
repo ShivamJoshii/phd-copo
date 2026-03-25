@@ -1,0 +1,6 @@
+[
+  {"co_id": "CO1", "ma_attainment": 0.7786, "ea_attainment": 0.7256, "indirect_attainment": 0.7965},
+  {"co_id": "CO2", "ma_attainment": 0.8403, "ea_attainment": 0.6123, "indirect_attainment": 0.6831},
+  {"co_id": "CO3", "ma_attainment": 0.7012, "ea_attainment": 0.6501, "indirect_attainment": 0.7200},
+  {"co_id": "CO4", "ma_attainment": 0.6200, "ea_attainment": 0.5900, "indirect_attainment": 0.6400}
+]

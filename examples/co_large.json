@@ -1,0 +1,6 @@
+[
+  {"id": "CO1", "text": "Analyze data structures for performance optimization."},
+  {"id": "CO2", "text": "Design normalized relational schemas for real-world applications."},
+  {"id": "CO3", "text": "Implement and test modular software components."},
+  {"id": "CO4", "text": "Evaluate system trade-offs under practical constraints."}
+]
