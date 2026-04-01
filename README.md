@@ -82,18 +82,21 @@ The mapper accepts both `.json` and `.csv` for CO and PO inputs.
 ]
 ```
 
-Equivalent CSV inputs are also supported (must include `id,text` columns):
+Equivalent CSV inputs are also supported.
+Accepted CSV headers are:
+- ID column: `id` or `CO` or `PO`
+- Text column: `text` or `Description`
 
 `co.csv`
 ```csv
-id,text
+CO,Description
 CO1,Design and implement relational database solutions.
 CO2,Analyze algorithmic efficiency for real-world problems.
 ```
 
 `po.csv`
 ```csv
-id,text
+PO,Description
 PO1,"Identify, formulate, and solve complex engineering problems."
 PO2,Design solutions that meet specified needs.
 ```

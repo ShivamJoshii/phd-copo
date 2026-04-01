@@ -32,10 +32,17 @@ def _load_json(uploaded_file) -> list[dict[str, str]]:
 def _load_csv(uploaded_file) -> list[dict[str, str]]:
     raw = uploaded_file.getvalue().decode("utf-8")
     rows = list(csv.DictReader(StringIO(raw)))
+    normalized_rows = []
     for item in rows:
-        if "id" not in item or "text" not in item:
-            raise ValueError("CSV must include 'id' and 'text' columns.")
-    return [{"id": str(item["id"]), "text": str(item["text"])} for item in rows]
+        lowered = {key.lower(): value for key, value in item.items()}
+        item_id = lowered.get("id") or lowered.get("co") or lowered.get("po")
+        item_text = lowered.get("text") or lowered.get("description")
+        if item_id is None or item_text is None:
+            raise ValueError(
+                "CSV must include ID column (id/CO/PO) and text column (text/Description)."
+            )
+        normalized_rows.append({"id": str(item_id).strip(), "text": str(item_text).strip()})
+    return normalized_rows
 
 
 def _load_outcomes(uploaded_file) -> list[dict[str, str]]:
@@ -95,7 +102,7 @@ def main() -> None:
         po_upload = st.file_uploader("Upload PO file", type=["json", "csv"])
 
     if co_upload is None or po_upload is None:
-        st.info("Please upload both CO and PO JSON files to continue.")
+        st.info("Please upload both CO and PO files (.json or .csv) to continue.")
         return
 
     if st.button("Run Mapping", type="primary"):

@@ -10,6 +10,15 @@ from .semantic import tfidf_pair_similarity
 from .types import Outcome
 
 
+def _pick_value(row: dict[str, str], candidates: list[str]) -> str | None:
+    lowered = {key.lower(): value for key, value in row.items()}
+    for candidate in candidates:
+        value = lowered.get(candidate.lower())
+        if value is not None:
+            return value
+    return None
+
+
 def _load_outcomes(path: Path) -> list[Outcome]:
     suffix = path.suffix.lower()
     if suffix == ".json":
@@ -18,7 +27,16 @@ def _load_outcomes(path: Path) -> list[Outcome]:
     if suffix == ".csv":
         with path.open() as f:
             rows = list(csv.DictReader(f))
-        return [Outcome(id=row["id"], text=row["text"]) for row in rows]
+        outcomes: list[Outcome] = []
+        for row in rows:
+            outcome_id = _pick_value(row, ["id", "co", "po"])
+            outcome_text = _pick_value(row, ["text", "description"])
+            if outcome_id is None or outcome_text is None:
+                raise ValueError(
+                    "CSV must include an ID column (id/CO/PO) and a text column (text/Description)."
+                )
+            outcomes.append(Outcome(id=outcome_id.strip(), text=outcome_text.strip()))
+        return outcomes
     raise ValueError(f"Unsupported file format for {path}. Use .json or .csv.")
 
 
