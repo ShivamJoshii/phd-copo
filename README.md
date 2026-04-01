@@ -62,6 +62,8 @@ Expected outputs:
 
 ## Input format
 
+The mapper accepts both `.json` and `.csv` for CO and PO inputs.
+
 `co.json`:
 
 ```json
@@ -78,6 +80,25 @@ Expected outputs:
   {"id": "PO1", "text": "Identify, formulate, and solve complex engineering problems."},
   {"id": "PO2", "text": "Design solutions that meet specified needs."}
 ]
+```
+
+Equivalent CSV inputs are also supported.
+Accepted CSV headers are:
+- ID column: `id` or `CO` or `PO`
+- Text column: `text` or `Description`
+
+`co.csv`
+```csv
+CO,Description
+CO1,Design and implement relational database solutions.
+CO2,Analyze algorithmic efficiency for real-world problems.
+```
+
+`po.csv`
+```csv
+PO,Description
+PO1,"Identify, formulate, and solve complex engineering problems."
+PO2,Design solutions that meet specified needs.
 ```
 
 ## Architecture mapping to specification
@@ -108,7 +129,7 @@ streamlit run streamlit_app.py
 ```
 
 Then in the app:
-1. Upload `CO` JSON and `PO` JSON files.
+1. Upload `CO` and `PO` files (`.json` or `.csv`).
 2. Click **Run Mapping**.
 3. Inspect the color-coded CO-PO matrix.
 4. Select a CO and PO to view detailed prediction info.
