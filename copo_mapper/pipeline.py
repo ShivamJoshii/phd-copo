@@ -23,11 +23,20 @@ def _load_outcomes(path: Path) -> list[Outcome]:
     suffix = path.suffix.lower()
     if suffix == ".json":
         data = json.loads(path.read_text())
-        return [Outcome(id=item["id"], text=item["text"]) for item in data]
+        outcomes: list[Outcome] = []
+        for item in data:
+            outcome_id = _pick_value(item, ["id", "co", "po"])
+            outcome_text = _pick_value(item, ["text", "description"])
+            if outcome_id is None or outcome_text is None:
+                raise ValueError(
+                    "JSON items must include an ID field (id/CO/PO) and a text field (text/description)."
+                )
+            outcomes.append(Outcome(id=outcome_id.strip(), text=outcome_text.strip()))
+        return outcomes
     if suffix == ".csv":
         with path.open() as f:
             rows = list(csv.DictReader(f))
-        outcomes: list[Outcome] = []
+        csv_outcomes: list[Outcome] = []
         for row in rows:
             outcome_id = _pick_value(row, ["id", "co", "po"])
             outcome_text = _pick_value(row, ["text", "description"])
@@ -35,8 +44,8 @@ def _load_outcomes(path: Path) -> list[Outcome]:
                 raise ValueError(
                     "CSV must include an ID column (id/CO/PO) and a text column (text/Description)."
                 )
-            outcomes.append(Outcome(id=outcome_id.strip(), text=outcome_text.strip()))
-        return outcomes
+            csv_outcomes.append(Outcome(id=outcome_id.strip(), text=outcome_text.strip()))
+        return csv_outcomes
     raise ValueError(f"Unsupported file format for {path}. Use .json or .csv.")
 
 

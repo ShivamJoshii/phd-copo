@@ -14,8 +14,8 @@ class PipelineSmokeTest(unittest.TestCase):
             po_file = tmp_path / "po.json"
             out_dir = tmp_path / "out"
 
-            co_file.write_text('[{"id":"CO1","text":"Design software solutions."}]')
-            po_file.write_text('[{"id":"PO1","text":"Design engineering solutions."}]')
+            co_file.write_text('[{"CO":"CO1","description":"Design software solutions."}]')
+            po_file.write_text('[{"PO":"PO1","description":"Design engineering solutions."}]')
 
             pair_path, matrix_path = run_pairwise_mapping(str(co_file), str(po_file), str(out_dir))
 
@@ -36,8 +36,8 @@ class PipelineSmokeTest(unittest.TestCase):
             po_file = tmp_path / "po.csv"
             out_dir = tmp_path / "out"
 
-            co_file.write_text("id,text\nCO1,Design software solutions.\n")
-            po_file.write_text("id,text\nPO1,Design engineering solutions.\n")
+            co_file.write_text("CO,description\nCO1,Design software solutions.\n")
+            po_file.write_text("PO,description\nPO1,Design engineering solutions.\n")
 
             pair_path, matrix_path = run_pairwise_mapping(str(co_file), str(po_file), str(out_dir))
 
