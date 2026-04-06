@@ -69,6 +69,31 @@ def _load_outcomes(uploaded_file) -> list[dict[str, str]]:
     raise ValueError("Unsupported file format. Please upload .json or .csv files.")
 
 
+def _load_csv(uploaded_file) -> list[dict[str, str]]:
+    raw = uploaded_file.getvalue().decode("utf-8")
+    rows = list(csv.DictReader(StringIO(raw)))
+    normalized_rows = []
+    for item in rows:
+        lowered = {key.lower(): value for key, value in item.items()}
+        item_id = lowered.get("id") or lowered.get("co") or lowered.get("po")
+        item_text = lowered.get("text") or lowered.get("description")
+        if item_id is None or item_text is None:
+            raise ValueError(
+                "CSV must include ID column (id/CO/PO) and text column (text/Description)."
+            )
+        normalized_rows.append({"id": str(item_id).strip(), "text": str(item_text).strip()})
+    return normalized_rows
+
+
+def _load_outcomes(uploaded_file) -> list[dict[str, str]]:
+    filename = uploaded_file.name.lower()
+    if filename.endswith(".json"):
+        return _load_json(uploaded_file)
+    if filename.endswith(".csv"):
+        return _load_csv(uploaded_file)
+    raise ValueError("Unsupported file format. Please upload .json or .csv files.")
+
+
 def _read_csv_rows(path: Path) -> list[dict[str, str]]:
     with path.open() as f:
         return list(csv.DictReader(f))

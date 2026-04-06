@@ -13,6 +13,7 @@ dependencies = []
 
 [project.optional-dependencies]
 ui = ["streamlit>=1.30"]
+sbert = ["sentence-transformers>=3.0"]
 
 [project.scripts]
 copo-map = "copo_mapper.cli:main"
