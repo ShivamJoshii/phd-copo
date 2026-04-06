@@ -6,7 +6,7 @@ from pathlib import Path
 
 from .preprocess import normalize_text
 from .scoring import score_pair
-from .semantic import sbert_pair_similarity, tfidf_pair_similarity
+from .semantic import DEFAULT_SBERT_MODEL, sbert_pair_similarity, tfidf_pair_similarity
 from .types import Outcome
 
 
@@ -40,7 +40,45 @@ def _load_outcomes(path: Path) -> list[Outcome]:
     raise ValueError(f"Unsupported file format for {path}. Use .json or .csv.")
 
 
-def run_pairwise_mapping(co_file: str, po_file: str, out_dir: str) -> tuple[Path, Path]:
+def _compute_semantic_similarities(
+    co_norms: list[str],
+    po_norms: list[str],
+    semantic_mode: str,
+    sbert_model: str,
+) -> tuple[list[float], str]:
+    tfidf_similarities = tfidf_pair_similarity(co_norms, po_norms)
+
+    if semantic_mode == "tfidf":
+        return tfidf_similarities, "tfidf"
+
+    sbert_similarities = sbert_pair_similarity(co_norms, po_norms, model_name=sbert_model)
+    if semantic_mode == "sbert":
+        if sbert_similarities is None:
+            raise ValueError(
+                "SBERT mode requested, but SentenceBERT is unavailable. Install with: pip install -e .[sbert]"
+            )
+        return sbert_similarities, "sbert"
+
+    if sbert_similarities is None:
+        return tfidf_similarities, "tfidf"
+
+    blended = [
+        (0.4 * tfidf) + (0.6 * sbert)
+        for tfidf, sbert in zip(tfidf_similarities, sbert_similarities, strict=True)
+    ]
+    return blended, "blended"
+
+
+def run_pairwise_mapping(
+    co_file: str,
+    po_file: str,
+    out_dir: str,
+    semantic_mode: str = "auto",
+    sbert_model: str = DEFAULT_SBERT_MODEL,
+) -> tuple[Path, Path]:
+    if semantic_mode not in {"auto", "tfidf", "sbert"}:
+        raise ValueError("semantic_mode must be one of: auto, tfidf, sbert.")
+
     co_items = _load_outcomes(Path(co_file))
     po_items = _load_outcomes(Path(po_file))
 
@@ -65,16 +103,17 @@ def run_pairwise_mapping(co_file: str, po_file: str, out_dir: str) -> tuple[Path
                 }
             )
 
-    tfidf_similarities = tfidf_pair_similarity(co_norms, po_norms)
-    sbert_similarities = sbert_pair_similarity(co_norms, po_norms)
-    similarities = (
-        [(0.4 * tfidf) + (0.6 * sbert) for tfidf, sbert in zip(tfidf_similarities, sbert_similarities, strict=True)]
-        if sbert_similarities is not None
-        else tfidf_similarities
+    similarities, semantic_source = _compute_semantic_similarities(
+        co_norms,
+        po_norms,
+        semantic_mode=semantic_mode,
+        sbert_model=sbert_model,
     )
 
     for i, row in enumerate(rows):
         result = score_pair(str(row["co_norm"]), str(row["po_norm"]), similarities[i])
+        row["semantic_similarity"] = round(similarities[i], 4)
+        row["semantic_source"] = semantic_source
         row["predicted_strength"] = result.score
         row["confidence"] = result.confidence
         row["explanation"] = result.explanation
@@ -92,6 +131,8 @@ def run_pairwise_mapping(co_file: str, po_file: str, out_dir: str) -> tuple[Path
                 "co_text",
                 "po_id",
                 "po_text",
+                "semantic_similarity",
+                "semantic_source",
                 "predicted_strength",
                 "confidence",
                 "explanation",

@@ -9,6 +9,7 @@ from pathlib import Path
 import streamlit as st
 
 from copo_mapper.pipeline import run_pairwise_mapping
+from copo_mapper.semantic import DEFAULT_SBERT_MODEL
 
 COLOR_BY_STRENGTH = {
     0: "#f8d7da",
@@ -42,6 +43,31 @@ def _load_json(uploaded_file) -> list[dict[str, str]]:
             )
         normalized.append({"id": str(item_id).strip(), "text": str(item_text).strip()})
     return normalized
+
+
+def _load_csv(uploaded_file) -> list[dict[str, str]]:
+    raw = uploaded_file.getvalue().decode("utf-8")
+    rows = list(csv.DictReader(StringIO(raw)))
+    normalized_rows = []
+    for item in rows:
+        lowered = {key.lower(): value for key, value in item.items()}
+        item_id = lowered.get("id") or lowered.get("co") or lowered.get("po")
+        item_text = lowered.get("text") or lowered.get("description")
+        if item_id is None or item_text is None:
+            raise ValueError(
+                "CSV must include ID column (id/CO/PO) and text column (text/Description)."
+            )
+        normalized_rows.append({"id": str(item_id).strip(), "text": str(item_text).strip()})
+    return normalized_rows
+
+
+def _load_outcomes(uploaded_file) -> list[dict[str, str]]:
+    filename = uploaded_file.name.lower()
+    if filename.endswith(".json"):
+        return _load_json(uploaded_file)
+    if filename.endswith(".csv"):
+        return _load_csv(uploaded_file)
+    raise ValueError("Unsupported file format. Please upload .json or .csv files.")
 
 
 def _load_csv(uploaded_file) -> list[dict[str, str]]:
@@ -140,6 +166,13 @@ def main() -> None:
         st.header("Inputs")
         co_upload = st.file_uploader("Upload CO file", type=["json", "csv"])
         po_upload = st.file_uploader("Upload PO file", type=["json", "csv"])
+        semantic_mode = st.selectbox(
+            "Semantic mode",
+            options=["auto", "tfidf", "sbert"],
+            index=0,
+            help="auto: use blended SBERT+TF-IDF when available; tfidf: lexical only; sbert: require SentenceBERT.",
+        )
+        sbert_model = st.text_input("SBERT model", value=DEFAULT_SBERT_MODEL)
 
     if co_upload is None or po_upload is None:
         st.info("Please upload both CO and PO files (.json or .csv) to continue.")
@@ -161,7 +194,13 @@ def main() -> None:
 
             co_path.write_text(json.dumps(co_data))
             po_path.write_text(json.dumps(po_data))
-            pair_path, matrix_path = run_pairwise_mapping(str(co_path), str(po_path), str(out_dir))
+            pair_path, matrix_path = run_pairwise_mapping(
+                str(co_path),
+                str(po_path),
+                str(out_dir),
+                semantic_mode=semantic_mode,
+                sbert_model=sbert_model,
+            )
 
             pair_rows = _read_csv_rows(pair_path)
             matrix_header, matrix_rows = _read_matrix(matrix_path)
@@ -169,6 +208,7 @@ def main() -> None:
         st.session_state["pair_rows"] = pair_rows
         st.session_state["matrix_header"] = matrix_header
         st.session_state["matrix_rows"] = matrix_rows
+        st.session_state["semantic_mode"] = semantic_mode
 
     if "pair_rows" not in st.session_state:
         return
@@ -176,6 +216,13 @@ def main() -> None:
     pair_rows: list[dict[str, str]] = st.session_state["pair_rows"]
     matrix_header: list[str] = st.session_state["matrix_header"]
     matrix_rows: list[list[str]] = st.session_state["matrix_rows"]
+    run_semantic_mode: str = st.session_state.get("semantic_mode", "auto")
+
+    semantic_source = pair_rows[0].get("semantic_source", "unknown")
+    if semantic_source == "tfidf" and run_semantic_mode != "tfidf":
+        st.warning("SBERT is not active in this run. Currently using TF-IDF fallback.")
+    else:
+        st.success(f"Semantic source used: {semantic_source}")
 
     st.subheader("CO-PO Matrix")
     st.markdown(_matrix_html(matrix_header, matrix_rows), unsafe_allow_html=True)
@@ -206,6 +253,8 @@ def main() -> None:
         st.write(f"**CO ({selected['co_id']}):** {selected['co_text']}")
         st.write(f"**PO ({selected['po_id']}):** {selected['po_text']}")
         st.write(f"**Predicted strength:** {selected['predicted_strength']}")
+        st.write(f"**Semantic similarity:** {selected.get('semantic_similarity', 'N/A')}")
+        st.write(f"**Semantic source:** {selected.get('semantic_source', 'N/A')}")
         st.write(f"**Confidence:** {selected.get('confidence', 'N/A')}")
         st.write(f"**Explanation:** {selected.get('explanation', 'N/A')}")
 

@@ -49,8 +49,13 @@ pip install -e .[sbert]
 copo-map \
   --co-file examples/co.json \
   --po-file examples/po.json \
-  --out-dir outputs
+  --out-dir outputs \
+  --semantic-mode auto
 ```
+
+Optional semantic controls:
+- `--semantic-mode auto|tfidf|sbert`
+- `--sbert-model sentence-transformers/all-MiniLM-L6-v2`
 
 Outputs:
 
@@ -143,10 +148,11 @@ streamlit run streamlit_app.py
 
 Then in the app:
 1. Upload `CO` and `PO` files (`.json` or `.csv`).
-2. Click **Run Mapping**.
-3. Inspect the color-coded CO-PO matrix.
-4. Select a CO and PO to view detailed prediction info.
-5. Use export buttons to download `pair_predictions.csv` and `matrix.csv`.
+2. Select semantic mode (`auto`, `tfidf`, or `sbert`) and optional model name.
+3. Click **Run Mapping**.
+4. Inspect the color-coded CO-PO matrix and semantic source banner.
+5. Select a CO and PO to view detailed prediction info (including semantic similarity/source).
+6. Use export buttons to download `pair_predictions.csv` and `matrix.csv`.
 
 Pairwise mapping threshold scale used by the scorer:
 - `0` for `0.00 <= confidence < 0.10`
