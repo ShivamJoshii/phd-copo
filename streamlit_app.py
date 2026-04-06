@@ -19,15 +19,80 @@ COLOR_BY_STRENGTH = {
 }
 
 
+def _pick_value(row: dict[str, str], candidates: list[str]) -> str | None:
+    lowered = {key.lower(): value for key, value in row.items()}
+    for candidate in candidates:
+        value = lowered.get(candidate.lower())
+        if value is not None:
+            return value
+    return None
+
+
 def _load_json(uploaded_file) -> list[dict[str, str]]:
     raw = uploaded_file.getvalue().decode("utf-8")
     data = json.loads(raw)
     if not isinstance(data, list):
-        raise ValueError("JSON must be a list of objects with id and text fields.")
+        raise ValueError("JSON must be a list of objects.")
+    normalized = []
     for item in data:
-        if "id" not in item or "text" not in item:
-            raise ValueError("Each item must include 'id' and 'text'.")
-    return data
+        item_id = _pick_value(item, ["id", "co", "po"])
+        item_text = _pick_value(item, ["text", "description"])
+        if item_id is None or item_text is None:
+            raise ValueError(
+                "Each item must include an ID field (id/CO/PO) and a text field (text/description)."
+            )
+        normalized.append({"id": str(item_id).strip(), "text": str(item_text).strip()})
+    return normalized
+
+
+def _load_csv(uploaded_file) -> list[dict[str, str]]:
+    raw = uploaded_file.getvalue().decode("utf-8")
+    rows = list(csv.DictReader(StringIO(raw)))
+    normalized_rows = []
+    for item in rows:
+        lowered = {key.lower(): value for key, value in item.items()}
+        item_id = lowered.get("id") or lowered.get("co") or lowered.get("po")
+        item_text = lowered.get("text") or lowered.get("description")
+        if item_id is None or item_text is None:
+            raise ValueError(
+                "CSV must include ID column (id/CO/PO) and text column (text/Description)."
+            )
+        normalized_rows.append({"id": str(item_id).strip(), "text": str(item_text).strip()})
+    return normalized_rows
+
+
+def _load_outcomes(uploaded_file) -> list[dict[str, str]]:
+    filename = uploaded_file.name.lower()
+    if filename.endswith(".json"):
+        return _load_json(uploaded_file)
+    if filename.endswith(".csv"):
+        return _load_csv(uploaded_file)
+    raise ValueError("Unsupported file format. Please upload .json or .csv files.")
+
+
+def _load_csv(uploaded_file) -> list[dict[str, str]]:
+    raw = uploaded_file.getvalue().decode("utf-8")
+    rows = list(csv.DictReader(StringIO(raw)))
+    normalized_rows = []
+    for item in rows:
+        lowered = {key.lower(): value for key, value in item.items()}
+        item_id = lowered.get("id") or lowered.get("co") or lowered.get("po")
+        item_text = lowered.get("text") or lowered.get("description")
+        if item_id is None or item_text is None:
+            raise ValueError(
+                "CSV must include ID column (id/CO/PO) and text column (text/Description)."
+            )
+        normalized_rows.append({"id": str(item_id).strip(), "text": str(item_text).strip()})
+    return normalized_rows
+
+
+def _load_outcomes(uploaded_file) -> list[dict[str, str]]:
+    filename = uploaded_file.name.lower()
+    if filename.endswith(".json"):
+        return _load_json(uploaded_file)
+    if filename.endswith(".csv"):
+        return _load_csv(uploaded_file)
+    raise ValueError("Unsupported file format. Please upload .json or .csv files.")
 
 
 def _load_csv(uploaded_file) -> list[dict[str, str]]:
