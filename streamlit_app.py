@@ -29,6 +29,31 @@ def _load_json(uploaded_file) -> list[dict[str, str]]:
     return data
 
 
+def _load_csv(uploaded_file) -> list[dict[str, str]]:
+    raw = uploaded_file.getvalue().decode("utf-8")
+    rows = list(csv.DictReader(StringIO(raw)))
+    normalized_rows = []
+    for item in rows:
+        lowered = {key.lower(): value for key, value in item.items()}
+        item_id = lowered.get("id") or lowered.get("co") or lowered.get("po")
+        item_text = lowered.get("text") or lowered.get("description")
+        if item_id is None or item_text is None:
+            raise ValueError(
+                "CSV must include ID column (id/CO/PO) and text column (text/Description)."
+            )
+        normalized_rows.append({"id": str(item_id).strip(), "text": str(item_text).strip()})
+    return normalized_rows
+
+
+def _load_outcomes(uploaded_file) -> list[dict[str, str]]:
+    filename = uploaded_file.name.lower()
+    if filename.endswith(".json"):
+        return _load_json(uploaded_file)
+    if filename.endswith(".csv"):
+        return _load_csv(uploaded_file)
+    raise ValueError("Unsupported file format. Please upload .json or .csv files.")
+
+
 def _read_csv_rows(path: Path) -> list[dict[str, str]]:
     with path.open() as f:
         return list(csv.DictReader(f))
@@ -69,21 +94,21 @@ def _matrix_html(header: list[str], rows: list[list[str]]) -> str:
 def main() -> None:
     st.set_page_config(page_title="CO-PO Mapper UI", layout="wide")
     st.title("CO-PO Mapping Inspector")
-    st.write("Upload CO and PO JSON files, run mapping, inspect matrix and pair-level details.")
+    st.write("Upload CO and PO files (.json or .csv), run mapping, inspect matrix and pair-level details.")
 
     with st.sidebar:
         st.header("Inputs")
-        co_upload = st.file_uploader("Upload CO JSON", type=["json"])
-        po_upload = st.file_uploader("Upload PO JSON", type=["json"])
+        co_upload = st.file_uploader("Upload CO file", type=["json", "csv"])
+        po_upload = st.file_uploader("Upload PO file", type=["json", "csv"])
 
     if co_upload is None or po_upload is None:
-        st.info("Please upload both CO and PO JSON files to continue.")
+        st.info("Please upload both CO and PO files (.json or .csv) to continue.")
         return
 
     if st.button("Run Mapping", type="primary"):
         try:
-            co_data = _load_json(co_upload)
-            po_data = _load_json(po_upload)
+            co_data = _load_outcomes(co_upload)
+            po_data = _load_outcomes(po_upload)
         except ValueError as err:
             st.error(str(err))
             return
