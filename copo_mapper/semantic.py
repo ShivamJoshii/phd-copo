@@ -2,10 +2,6 @@ from __future__ import annotations
 
 import math
 from collections import Counter
-from functools import lru_cache
-
-
-DEFAULT_SBERT_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
 
 
 def _tf(text: str) -> Counter[str]:
@@ -23,31 +19,3 @@ def _cosine(counter_a: Counter[str], counter_b: Counter[str]) -> float:
 
 def tfidf_pair_similarity(co_texts: list[str], po_texts: list[str]) -> list[float]:
     return [_cosine(_tf(co), _tf(po)) for co, po in zip(co_texts, po_texts, strict=True)]
-
-
-@lru_cache(maxsize=2)
-def _load_sbert_model(model_name: str):
-    from sentence_transformers import SentenceTransformer
-
-    return SentenceTransformer(model_name)
-
-
-def sbert_pair_similarity(
-    co_texts: list[str],
-    po_texts: list[str],
-    model_name: str = DEFAULT_SBERT_MODEL,
-) -> list[float] | None:
-    if len(co_texts) != len(po_texts):
-        raise ValueError("co_texts and po_texts must have the same length.")
-
-    try:
-        model = _load_sbert_model(model_name)
-    except Exception:
-        return None
-
-    co_vectors = model.encode(co_texts, convert_to_tensor=True)
-    po_vectors = model.encode(po_texts, convert_to_tensor=True)
-    from sentence_transformers import util
-
-    sims = util.cos_sim(co_vectors, po_vectors).diagonal()
-    return [float(score) for score in sims]

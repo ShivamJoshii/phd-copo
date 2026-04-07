@@ -12,14 +12,6 @@ Given a list of Course Outcomes (COs) and Program Outcomes (POs), the system:
 4. Predicts mapping strength on a 4-point scale (`0,1,2,3`).
 5. Exports pairwise predictions and a matrix view.
 
-### Semantic scoring upgrade (SBERT)
-
-The mapper now supports **optional SentenceBERT semantic similarity**:
-- If `sentence-transformers` is installed, pair similarity is blended as `0.6 * SBERT + 0.4 * TF-IDF`.
-- If not installed (or model load fails), it automatically falls back to TF-IDF only.
-
-> Note: this improves semantic matching, but it does **not** train the model on your data by itself.
-
 ## Project status
 
 This is an initial MVP that focuses on a transparent, explainable baseline architecture with clear extension points for:
@@ -35,12 +27,6 @@ This is an initial MVP that focuses on a transparent, explainable baseline archi
 python -m venv .venv
 source .venv/bin/activate
 pip install -e .
-```
-
-Optional SBERT support:
-
-```bash
-pip install -e .[sbert]
 ```
 
 ### Run pairwise prediction (rule-based baseline)
@@ -76,8 +62,6 @@ Expected outputs:
 
 ## Input format
 
-The mapper accepts both `.json` and `.csv` for CO and PO inputs.
-
 `co.json`:
 
 ```json
@@ -96,25 +80,6 @@ The mapper accepts both `.json` and `.csv` for CO and PO inputs.
 ]
 ```
 
-Equivalent CSV inputs are also supported.
-Accepted CSV headers are:
-- ID column: `id` or `CO` or `PO`
-- Text column: `text` or `Description`
-
-`co.csv`
-```csv
-CO,Description
-CO1,Design and implement relational database solutions.
-CO2,Analyze algorithmic efficiency for real-world problems.
-```
-
-`po.csv`
-```csv
-PO,Description
-PO1,"Identify, formulate, and solve complex engineering problems."
-PO2,Design solutions that meet specified needs.
-```
-
 ## Architecture mapping to specification
 
 - **Layer 1**: preprocessing (`copo_mapper/preprocess.py`)
@@ -125,14 +90,15 @@ PO2,Design solutions that meet specified needs.
 
 ## Next milestones
 
-1. Add cross-encoder pair scorer.
-2. Add trainable XGBoost classifier on labeled faculty data.
-3. Build review UI/API for human corrections and feedback loop.
+1. Add sentence-transformer embeddings.
+2. Add cross-encoder pair scorer.
+3. Add trainable XGBoost classifier on labeled faculty data.
+4. Build review UI/API for human corrections and feedback loop.
 
 
 
 
-## Streamlit UI
+## Streamlit UI (Connected Stage 1 + Stage 2)
 
 Launch the browser UI with:
 
@@ -141,12 +107,19 @@ pip install streamlit
 streamlit run streamlit_app.py
 ```
 
-Then in the app:
-1. Upload `CO` and `PO` files (`.json` or `.csv`).
+In the same Streamlit app, you now have two tabs:
+- **Stage 1: Mapping** (CO/PO upload, pair scoring, matrix view)
+- **Stage 2: Attainment** (uses Stage 1 matrix automatically, or accepts uploaded matrix CSV)
+
+So attainment is **not a separate app** in the browser workflow anymore.
+
+Recommended flow:
+1. In **Stage 1**, upload `CO` JSON and `PO` JSON.
 2. Click **Run Mapping**.
-3. Inspect the color-coded CO-PO matrix.
-4. Select a CO and PO to view detailed prediction info.
-5. Use export buttons to download `pair_predictions.csv` and `matrix.csv`.
+3. Review matrix and pair details.
+4. Switch to **Stage 2**, upload CO attainment JSON + config JSON.
+5. Click **Run Attainment Analysis** (it reuses Stage 1 matrix by default).
+6. Export Stage 1 and Stage 2 result files from the download buttons.
 
 Pairwise mapping threshold scale used by the scorer:
 - `0` for `0.00 <= confidence < 0.10`
@@ -217,7 +190,11 @@ This stage consumes:
 ### Run Stage 2 CLI
 
 ```bash
-python -m copo_mapper.attainment_cli   --co-attainment-file examples/co_attainment.json   --mapping-matrix-file examples/mapping_matrix.csv   --config-file examples/attainment_config.json   --out-dir attainment_outputs
+python -m copo_mapper.attainment_cli \
+  --co-attainment-file examples/co_attainment.json \
+  --mapping-matrix-file examples/mapping_matrix.csv \
+  --config-file examples/attainment_config.json \
+  --out-dir attainment_outputs
 ```
 
 Outputs:
