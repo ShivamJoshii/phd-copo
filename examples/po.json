@@ -1,5 +1,5 @@
 [
-  {"PO": "PO1", "Description for PO": "Identify, formulate, and analyze complex engineering problems."},
-  {"PO": "PO2", "Description for PO": "Design and develop engineering solutions considering user requirements."},
-  {"PO": "PO3", "Description for PO": "Communicate effectively with engineering and non-engineering audiences."}
+  {"PO": "PO1", "description": "Identify, formulate, and analyze complex engineering problems."},
+  {"PO": "PO2", "description": "Design and develop engineering solutions considering user requirements."},
+  {"PO": "PO3", "description": "Communicate effectively with engineering and non-engineering audiences."}
 ]

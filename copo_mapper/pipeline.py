@@ -10,9 +10,9 @@ from .semantic import tfidf_pair_similarity
 from .types import Outcome
 
 CO_ID_KEY = "CO"
-CO_TEXT_KEY = "Description for CO"
+CO_TEXT_KEY = "description"
 PO_ID_KEY = "PO"
-PO_TEXT_KEY = "Description for PO"
+PO_TEXT_KEY = "description"
 
 
 def _load_outcomes(path: Path, id_key: str, text_key: str) -> list[Outcome]:

@@ -1,6 +1,6 @@
 [
-  {"CO": "CO1", "Description for CO": "Analyze data structures for performance optimization."},
-  {"CO": "CO2", "Description for CO": "Design normalized relational schemas for real-world applications."},
-  {"CO": "CO3", "Description for CO": "Implement and test modular software components."},
-  {"CO": "CO4", "Description for CO": "Evaluate system trade-offs under practical constraints."}
+  {"CO": "CO1", "description": "Analyze data structures for performance optimization."},
+  {"CO": "CO2", "description": "Design normalized relational schemas for real-world applications."},
+  {"CO": "CO3", "description": "Implement and test modular software components."},
+  {"CO": "CO4", "description": "Evaluate system trade-offs under practical constraints."}
 ]

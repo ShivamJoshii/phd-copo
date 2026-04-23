@@ -16,17 +16,17 @@ class DynamicSizePipelineTest(unittest.TestCase):
             out_dir = tmp_path / "out"
 
             cos = [
-                {"CO": "CO1", "Description for CO": "Analyze data structures for performance."},
-                {"CO": "CO2", "Description for CO": "Design database schemas for applications."},
-                {"CO": "CO3", "Description for CO": "Implement software testing workflows."},
-                {"CO": "CO4", "Description for CO": "Communicate technical findings effectively."},
+                {"CO": "CO1", "description": "Analyze data structures for performance."},
+                {"CO": "CO2", "description": "Design database schemas for applications."},
+                {"CO": "CO3", "description": "Implement software testing workflows."},
+                {"CO": "CO4", "description": "Communicate technical findings effectively."},
             ]
             pos = [
-                {"PO": "PO1", "Description for PO": "Analyze complex engineering problems."},
-                {"PO": "PO2", "Description for PO": "Design robust engineering solutions."},
-                {"PO": "PO3", "Description for PO": "Use modern engineering tools."},
-                {"PO": "PO4", "Description for PO": "Communicate with diverse stakeholders."},
-                {"PO": "PO5", "Description for PO": "Apply professional ethics in engineering."},
+                {"PO": "PO1", "description": "Analyze complex engineering problems."},
+                {"PO": "PO2", "description": "Design robust engineering solutions."},
+                {"PO": "PO3", "description": "Use modern engineering tools."},
+                {"PO": "PO4", "description": "Communicate with diverse stakeholders."},
+                {"PO": "PO5", "description": "Apply professional ethics in engineering."},
             ]
 
             co_file.write_text(json.dumps(cos))
