@@ -5,6 +5,8 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 
+from .io_utils import normalize_keys
+
 
 @dataclass(frozen=True)
 class WeightConfig:
@@ -128,9 +130,9 @@ def load_weight_config(path: str) -> WeightConfig:
             rows = list(csv.DictReader(f))
         if len(rows) != 1:
             raise ValueError(f"{p.name}: config CSV must contain exactly one data row.")
-        data = rows[0]
+        data = normalize_keys(rows[0])
     elif suffix == ".json":
-        data = json.loads(p.read_text())
+        data = normalize_keys(json.loads(p.read_text()))
     else:
         raise ValueError(f"{p.name}: unsupported extension '{suffix}'. Use .json or .csv.")
 
@@ -145,27 +147,39 @@ def load_weight_config(path: str) -> WeightConfig:
 
 
 def load_co_attainment_input(path: str) -> list[COAttainmentInput]:
-    rows = _read_tabular(Path(path))
-    return [
-        COAttainmentInput(
-            co_id=str(row["co_id"]).strip(),
-            ma_attainment=float(row["ma_attainment"]),
-            ea_attainment=float(row["ea_attainment"]),
-            indirect_attainment=float(row["indirect_attainment"]),
+    results: list[COAttainmentInput] = []
+    for row in _read_tabular(Path(path)):
+        r = normalize_keys(row)
+        results.append(
+            COAttainmentInput(
+                co_id=str(r["co_id"]).strip(),
+                ma_attainment=float(r["ma_attainment"]),
+                ea_attainment=float(r["ea_attainment"]),
+                indirect_attainment=float(r["indirect_attainment"]),
+            )
         )
-        for row in rows
-    ]
+    return results
 
 
 def load_mapping_matrix(path: str) -> dict[str, dict[str, int]]:
-    with Path(path).open() as f:
-        reader = csv.DictReader(f)
-        rows = list(reader)
+    p = Path(path)
+    with p.open() as f:
+        rows = list(csv.DictReader(f))
 
     mapping: dict[str, dict[str, int]] = {}
     for row in rows:
-        co_id = row["co_id"]
-        mapping[co_id] = {k: int(v) for k, v in row.items() if k != "co_id" and v != ""}
+        co_id_value: str | None = None
+        po_cells: dict[str, int] = {}
+        for k, v in row.items():
+            if k is None:
+                continue
+            if k.strip().lower() == "co_id":
+                co_id_value = v
+            elif v not in ("", None):
+                po_cells[k] = int(v)
+        if co_id_value is None:
+            raise ValueError(f"{p.name}: matrix CSV must include a 'co_id' column.")
+        mapping[str(co_id_value).strip()] = po_cells
     return mapping
 
 
