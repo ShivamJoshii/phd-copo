@@ -8,7 +8,13 @@ from pathlib import Path
 
 import streamlit as st
 
-from copo_mapper.attainment import run_attainment_analysis
+from copo_mapper.attainment import (
+    COAttainmentInput,
+    WeightConfig,
+    load_co_attainment_input,
+    load_mapping_matrix,
+    run_attainment_analysis_from_objects,
+)
 from copo_mapper.io_utils import normalize_keys
 from copo_mapper.pipeline import (
     CO_ID_KEY,
@@ -60,14 +66,6 @@ def _load_outcome_upload(uploaded_file, id_key: str, text_key: str) -> list[dict
     return rows
 
 
-def _load_generic_upload(uploaded_file) -> list[dict] | dict:
-    suffix = _upload_suffix(uploaded_file)
-    raw = uploaded_file.getvalue().decode("utf-8")
-    if suffix == ".csv":
-        return list(csv.DictReader(StringIO(raw)))
-    return json.loads(raw)
-
-
 def _read_csv_rows(path: Path) -> list[dict[str, str]]:
     with path.open() as f:
         return list(csv.DictReader(f))
@@ -77,6 +75,20 @@ def _read_matrix(path: Path) -> tuple[list[str], list[list[str]]]:
     with path.open() as f:
         reader = list(csv.reader(f))
     return reader[0], reader[1:]
+
+
+def _read_matrix_from_string(text: str) -> tuple[list[str], list[list[str]]]:
+    reader = list(csv.reader(StringIO(text)))
+    return reader[0], reader[1:]
+
+
+def _co_attainment_template_csv(co_ids: list[str]) -> str:
+    buffer = StringIO()
+    writer = csv.writer(buffer)
+    writer.writerow(["co_id", "ma_attainment", "ea_attainment", "indirect_attainment"])
+    for cid in co_ids:
+        writer.writerow([cid, 0.0, 0.0, 0.0])
+    return buffer.getvalue()
 
 
 def _matrix_html(header: list[str], rows: list[list[str]]) -> str:
@@ -220,70 +232,174 @@ def _mapping_tab() -> None:
 
 
 def _attainment_tab() -> None:
-    st.subheader("Stage 2 — Attainment Analysis (Connected)")
-    st.write("Use mapping matrix from Stage 1 or upload a matrix CSV, then run attainment roll-up.")
+    st.subheader("Stage 2 — Attainment Analysis")
+    st.write(
+        "Fill the CO table with MA (Internal) / EA (End-Semester) / Indirect values, pick the "
+        "weight splits and target level, then run. The mapping matrix from Stage 1 provides the "
+        "CO list and the PO/PSO columns."
+    )
 
     with st.sidebar:
         st.header("Stage 2 Inputs")
-        co_att_upload = st.file_uploader(
-            "Upload CO Attainment (JSON or CSV)",
-            type=TABULAR_UPLOAD_TYPES,
-            key="co_att_upload",
-            help="Columns: co_id, ma_attainment, ea_attainment, indirect_attainment",
-        )
-        config_upload = st.file_uploader(
-            "Upload Attainment Config (JSON or CSV)",
-            type=TABULAR_UPLOAD_TYPES,
-            key="config_upload",
-            help="Keys: ma_weight, ea_weight, direct_weight, indirect_weight, co_target_level, po_target_level",
-        )
         matrix_upload = st.file_uploader(
             "Optional: Upload Mapping Matrix CSV",
             type=["csv"],
             key="matrix_upload",
-            help="If omitted, Stage 2 will use the Stage 1 matrix from this app session.",
+            help="If omitted, Stage 2 uses the Stage 1 matrix from this app session.",
+        )
+        prefill_upload = st.file_uploader(
+            "Optional: Pre-fill CO Attainment (CSV or JSON)",
+            type=TABULAR_UPLOAD_TYPES,
+            key="co_att_prefill",
+            help="Columns: co_id, ma_attainment, ea_attainment, indirect_attainment. "
+            "Values populate the editable table below; you can still edit them.",
         )
 
-    if co_att_upload is None or config_upload is None:
-        st.info("Upload CO attainment and config files (JSON or CSV) to run Stage 2.")
+    if matrix_upload is not None:
+        matrix_csv = matrix_upload.getvalue().decode("utf-8")
+    else:
+        matrix_csv = st.session_state.get("matrix_csv")
+
+    if matrix_csv is None:
+        st.info("No mapping matrix available. Run Stage 1 first, or upload a matrix CSV in the sidebar.")
         return
+
+    _matrix_header, matrix_body = _read_matrix_from_string(matrix_csv)
+    co_ids = [row[0] for row in matrix_body]
+
+    table_key = "co_attainment_table"
+    version_key = "co_editor_version"
+
+    if st.session_state.get("co_attainment_ids") != co_ids:
+        prior = {row["co_id"]: row for row in st.session_state.get(table_key, [])}
+        st.session_state[table_key] = [
+            prior.get(cid, {"co_id": cid, "MA": 0.0, "EA": 0.0, "Indirect": 0.0})
+            for cid in co_ids
+        ]
+        st.session_state["co_attainment_ids"] = co_ids
+        st.session_state[version_key] = st.session_state.get(version_key, 0) + 1
+
+    if prefill_upload is not None and st.session_state.get("_prefill_fid") != prefill_upload.file_id:
+        prefill_error: str | None = None
+        loaded: list[COAttainmentInput] = []
+        try:
+            suffix = _upload_suffix(prefill_upload)
+            with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tf:
+                tf.write(prefill_upload.getvalue())
+                tmp_name = tf.name
+            try:
+                loaded = load_co_attainment_input(tmp_name)
+            finally:
+                Path(tmp_name).unlink(missing_ok=True)
+        except (ValueError, KeyError) as err:
+            prefill_error = str(err)
+
+        if prefill_error is not None:
+            st.error(f"Prefill failed: {prefill_error}")
+        else:
+            by_id = {item.co_id: item for item in loaded}
+            new_rows = []
+            for row in st.session_state[table_key]:
+                item = by_id.get(row["co_id"])
+                if item is None:
+                    new_rows.append(row)
+                else:
+                    new_rows.append(
+                        {
+                            "co_id": row["co_id"],
+                            "MA": item.ma_attainment,
+                            "EA": item.ea_attainment,
+                            "Indirect": item.indirect_attainment,
+                        }
+                    )
+            st.session_state[table_key] = new_rows
+            st.session_state["_prefill_fid"] = prefill_upload.file_id
+            st.session_state[version_key] = st.session_state.get(version_key, 0) + 1
+            st.rerun()
+
+    st.markdown("### CO Attainment (edit values per CO)")
+    edited = st.data_editor(
+        st.session_state[table_key],
+        key=f"co_editor_v{st.session_state.get(version_key, 0)}",
+        num_rows="fixed",
+        use_container_width=True,
+        column_config={
+            "co_id": st.column_config.TextColumn("CO", disabled=True),
+            "MA": st.column_config.NumberColumn(
+                "MA (Internal)", min_value=0.0, max_value=1.0, step=0.0001, format="%.4f"
+            ),
+            "EA": st.column_config.NumberColumn(
+                "EA (End-Semester)", min_value=0.0, max_value=1.0, step=0.0001, format="%.4f"
+            ),
+            "Indirect": st.column_config.NumberColumn(
+                "Indirect", min_value=0.0, max_value=1.0, step=0.0001, format="%.4f"
+            ),
+        },
+    )
+    st.session_state[table_key] = edited
+
+    st.download_button(
+        "Download CO Attainment Template (CSV)",
+        data=_co_attainment_template_csv(co_ids),
+        file_name="co_attainment_template.csv",
+        mime="text/csv",
+    )
+
+    st.markdown("### Weights & Target")
+    col_a, col_b, col_c = st.columns(3)
+    with col_a:
+        ma_weight = st.number_input(
+            "MA weight", min_value=0.0, max_value=1.0, value=0.4, step=0.05, key="ma_weight"
+        )
+        st.caption(f"EA weight = {1 - ma_weight:.2f}")
+    with col_b:
+        direct_weight = st.number_input(
+            "Direct weight", min_value=0.0, max_value=1.0, value=0.8, step=0.05, key="direct_weight"
+        )
+        st.caption(f"Indirect weight = {1 - direct_weight:.2f}")
+    with col_c:
+        target_level = st.number_input(
+            "Target level (scaled 0–3)",
+            min_value=0.0,
+            max_value=3.0,
+            value=1.4,
+            step=0.1,
+            key="target_level",
+        )
 
     if st.button("Run Attainment Analysis", type="primary"):
         try:
-            _load_generic_upload(co_att_upload)
-            _load_generic_upload(config_upload)
-            co_att_suffix = _upload_suffix(co_att_upload)
-            cfg_suffix = _upload_suffix(config_upload)
-        except ValueError as err:
-            st.error(str(err))
+            co_inputs = [
+                COAttainmentInput(
+                    co_id=str(row["co_id"]),
+                    ma_attainment=float(row.get("MA") or 0.0),
+                    ea_attainment=float(row.get("EA") or 0.0),
+                    indirect_attainment=float(row.get("Indirect") or 0.0),
+                )
+                for row in edited
+            ]
+        except (TypeError, ValueError) as err:
+            st.error(f"Invalid value in CO attainment table: {err}")
             return
 
-        matrix_csv = None
-        if matrix_upload is not None:
-            matrix_csv = matrix_upload.getvalue().decode("utf-8")
-        else:
-            matrix_csv = st.session_state.get("matrix_csv")
-
-        if matrix_csv is None:
-            st.error("No mapping matrix available. Run Stage 1 first or upload matrix CSV in Stage 2.")
-            return
+        config = WeightConfig(
+            ma_weight=float(ma_weight),
+            ea_weight=float(1 - ma_weight),
+            direct_weight=float(direct_weight),
+            indirect_weight=float(1 - direct_weight),
+            co_target_level=float(target_level),
+            po_target_level=float(target_level),
+        )
 
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
-            co_att_path = tmp_path / f"co_attainment{co_att_suffix}"
-            cfg_path = tmp_path / f"attainment_config{cfg_suffix}"
             matrix_path = tmp_path / "matrix.csv"
-            out_dir = tmp_path / "attainment_out"
-
-            co_att_path.write_bytes(co_att_upload.getvalue())
-            cfg_path.write_bytes(config_upload.getvalue())
             matrix_path.write_text(matrix_csv)
+            mapping = load_mapping_matrix(str(matrix_path))
 
-            paths = run_attainment_analysis(
-                co_attainment_file=str(co_att_path),
-                mapping_matrix_file=str(matrix_path),
-                config_file=str(cfg_path),
-                out_dir=str(out_dir),
+            out_dir = tmp_path / "attainment_out"
+            paths = run_attainment_analysis_from_objects(
+                co_inputs, mapping, config, str(out_dir)
             )
 
             co_summary = _read_csv_rows(paths["co_summary"])
