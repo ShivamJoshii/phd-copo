@@ -138,12 +138,21 @@ In the same Streamlit app, you now have two tabs:
 So attainment is **not a separate app** in the browser workflow anymore.
 
 Recommended flow:
-1. In **Stage 1**, upload `CO` JSON and `PO` JSON.
+1. In **Stage 1**, upload `CO` and `PO` files (JSON or CSV).
 2. Click **Run Mapping**.
 3. Review matrix and pair details.
-4. Switch to **Stage 2**, upload CO attainment JSON + config JSON.
-5. Click **Run Attainment Analysis** (it reuses Stage 1 matrix by default).
-6. Export Stage 1 and Stage 2 result files from the download buttons.
+4. Switch to **Stage 2**. The CO list is seeded from the Stage 1 matrix.
+5. Type MA / EA / Indirect values per CO directly in the table (or use
+   *Pre-fill CO Attainment* to load a CSV/JSON into the table; you can still edit).
+6. Set the `MA weight`, `Direct weight`, and `Target level` inline. `EA weight` and
+   `Indirect weight` are derived as `1 - MA weight` and `1 - Direct weight`.
+7. Click **Run Attainment Analysis**.
+8. Review the CO summary, PO summary (includes an `Attainment in Percentage` column),
+   target achievement, and course summary, then download the CSVs.
+
+Program Specific Outcomes (PSOs) are modeled as extra rows in the **Stage 1 PO**
+input file — e.g. rows with `PO = PSO1, PSO2, ...`. They become additional
+columns in the mapping matrix and are attained just like POs in Stage 2.
 
 Pairwise mapping threshold scale used by the scorer:
 - `0` for `0.00 <= confidence < 0.10`

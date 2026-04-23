@@ -42,6 +42,7 @@ class COAttainmentResult:
 class POAttainmentResult:
     po_id: str
     weighted_attainment: float
+    percentage: float
     scaled_attainment: float
     target_achieved: str
 
@@ -101,6 +102,7 @@ def compute_po_attainment(
             POAttainmentResult(
                 po_id=po_id,
                 weighted_attainment=round(weighted, 4),
+                percentage=round(weighted * 100, 2),
                 scaled_attainment=round(scaled, 2),
                 target_achieved="Y" if scaled >= config.po_target_level else "N",
             )
@@ -209,18 +211,12 @@ def summarize_course(
     }
 
 
-def run_attainment_analysis(
-    co_attainment_file: str,
-    mapping_matrix_file: str,
-    config_file: str,
+def _write_attainment_outputs(
+    co_results: list[COAttainmentResult],
+    po_results: list[POAttainmentResult],
+    config: WeightConfig,
     out_dir: str,
 ) -> dict[str, Path]:
-    config = load_weight_config(config_file)
-    co_inputs = load_co_attainment_input(co_attainment_file)
-    mapping = load_mapping_matrix(mapping_matrix_file)
-
-    co_results = compute_co_attainment(co_inputs, config)
-    po_results = compute_po_attainment(co_results, mapping, config)
     course_summary = summarize_course(co_results, po_results)
 
     output_dir = Path(out_dir)
@@ -273,3 +269,26 @@ def run_attainment_analysis(
         "target_achievement": target_path,
         "course_summary": summary_path,
     }
+
+
+def run_attainment_analysis_from_objects(
+    co_inputs: list[COAttainmentInput],
+    mapping: dict[str, dict[str, int]],
+    config: WeightConfig,
+    out_dir: str,
+) -> dict[str, Path]:
+    co_results = compute_co_attainment(co_inputs, config)
+    po_results = compute_po_attainment(co_results, mapping, config)
+    return _write_attainment_outputs(co_results, po_results, config, out_dir)
+
+
+def run_attainment_analysis(
+    co_attainment_file: str,
+    mapping_matrix_file: str,
+    config_file: str,
+    out_dir: str,
+) -> dict[str, Path]:
+    config = load_weight_config(config_file)
+    co_inputs = load_co_attainment_input(co_attainment_file)
+    mapping = load_mapping_matrix(mapping_matrix_file)
+    return run_attainment_analysis_from_objects(co_inputs, mapping, config, out_dir)
