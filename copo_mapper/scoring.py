@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 from dataclasses import dataclass
 
 from .features import bloom_distance, detect_bloom, detect_domains, jaccard, token_set
