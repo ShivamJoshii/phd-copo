@@ -9,15 +9,37 @@ from .scoring import score_pair
 from .semantic import tfidf_pair_similarity
 from .types import Outcome
 
+CO_ID_KEY = "CO"
+CO_TEXT_KEY = "Description for CO"
+PO_ID_KEY = "PO"
+PO_TEXT_KEY = "Description for PO"
 
-def _load_outcomes(path: Path) -> list[Outcome]:
-    data = json.loads(path.read_text())
-    return [Outcome(id=item["id"], text=item["text"]) for item in data]
+
+def _load_outcomes(path: Path, id_key: str, text_key: str) -> list[Outcome]:
+    suffix = path.suffix.lower()
+    if suffix == ".csv":
+        with path.open(newline="") as f:
+            rows: list[dict[str, str]] = list(csv.DictReader(f))
+    elif suffix == ".json":
+        rows = json.loads(path.read_text())
+        if not isinstance(rows, list):
+            raise ValueError(f"{path.name}: JSON input must be a list of objects.")
+    else:
+        raise ValueError(f"{path.name}: unsupported extension '{suffix}'. Use .json or .csv.")
+
+    outcomes: list[Outcome] = []
+    for item in rows:
+        if id_key not in item or text_key not in item:
+            raise ValueError(
+                f"{path.name}: each row must include columns '{id_key}' and '{text_key}'."
+            )
+        outcomes.append(Outcome(id=str(item[id_key]).strip(), text=str(item[text_key]).strip()))
+    return outcomes
 
 
 def run_pairwise_mapping(co_file: str, po_file: str, out_dir: str) -> tuple[Path, Path]:
-    co_items = _load_outcomes(Path(co_file))
-    po_items = _load_outcomes(Path(po_file))
+    co_items = _load_outcomes(Path(co_file), id_key=CO_ID_KEY, text_key=CO_TEXT_KEY)
+    po_items = _load_outcomes(Path(po_file), id_key=PO_ID_KEY, text_key=PO_TEXT_KEY)
 
     rows: list[dict[str, str | int | float]] = []
     co_norms: list[str] = []

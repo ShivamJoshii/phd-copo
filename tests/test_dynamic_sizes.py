@@ -16,17 +16,17 @@ class DynamicSizePipelineTest(unittest.TestCase):
             out_dir = tmp_path / "out"
 
             cos = [
-                {"id": "CO1", "text": "Analyze data structures for performance."},
-                {"id": "CO2", "text": "Design database schemas for applications."},
-                {"id": "CO3", "text": "Implement software testing workflows."},
-                {"id": "CO4", "text": "Communicate technical findings effectively."},
+                {"CO": "CO1", "Description for CO": "Analyze data structures for performance."},
+                {"CO": "CO2", "Description for CO": "Design database schemas for applications."},
+                {"CO": "CO3", "Description for CO": "Implement software testing workflows."},
+                {"CO": "CO4", "Description for CO": "Communicate technical findings effectively."},
             ]
             pos = [
-                {"id": "PO1", "text": "Analyze complex engineering problems."},
-                {"id": "PO2", "text": "Design robust engineering solutions."},
-                {"id": "PO3", "text": "Use modern engineering tools."},
-                {"id": "PO4", "text": "Communicate with diverse stakeholders."},
-                {"id": "PO5", "text": "Apply professional ethics in engineering."},
+                {"PO": "PO1", "Description for PO": "Analyze complex engineering problems."},
+                {"PO": "PO2", "Description for PO": "Design robust engineering solutions."},
+                {"PO": "PO3", "Description for PO": "Use modern engineering tools."},
+                {"PO": "PO4", "Description for PO": "Communicate with diverse stakeholders."},
+                {"PO": "PO5", "Description for PO": "Apply professional ethics in engineering."},
             ]
 
             co_file.write_text(json.dumps(cos))
@@ -45,7 +45,7 @@ class DynamicSizePipelineTest(unittest.TestCase):
             # co_id + one column per PO
             self.assertEqual(len(matrix_rows[0]), len(pos) + 1)
 
-            expected_pairs = {(co["id"], po["id"]) for co in cos for po in pos}
+            expected_pairs = {(co["CO"], po["PO"]) for co in cos for po in pos}
             actual_pairs = {(row["co_id"], row["po_id"]) for row in pair_rows}
             self.assertSetEqual(actual_pairs, expected_pairs)
 
