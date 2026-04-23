@@ -100,7 +100,7 @@ def compute_po_attainment(
             POAttainmentResult(
                 po_id=po_id,
                 weighted_attainment=round(weighted, 4),
-                percentage=round(weighted * 100, 2),
+                percentage=round(weighted * 100, 4),
                 scaled_attainment=round(scaled, 2),
                 target_achieved="Y" if scaled >= config.po_target_level else "N",
             )
@@ -209,9 +209,40 @@ def summarize_course(
     }
 
 
+def build_po_attainment_matrix(
+    co_results: list[COAttainmentResult],
+    po_results: list[POAttainmentResult],
+    mapping: dict[str, dict[str, int]],
+    config: WeightConfig,
+) -> list[list[str]]:
+    """Spreadsheet-style wide view: Final CO × PO/PSO mapping + summary footer rows."""
+    po_ids = [r.po_id for r in po_results]
+
+    rows: list[list[str]] = [["course_outcome", *po_ids]]
+    for co in co_results:
+        mapping_row = mapping.get(co.co_id, {})
+        rows.append(
+            [
+                f"{co.final_attainment:.4f}",
+                *[str(mapping_row.get(pid, 0)) for pid in po_ids],
+            ]
+        )
+    rows.append(["weighted_attainment", *[f"{p.weighted_attainment:.4f}" for p in po_results]])
+    rows.append(["attainment_percentage", *[f"{p.percentage:.4f}" for p in po_results]])
+    rows.append(["attainment_on_scale_of_3", *[f"{p.scaled_attainment:.2f}" for p in po_results]])
+    rows.append(
+        [
+            f"target_{config.po_target_level}_achieved",
+            *[p.target_achieved for p in po_results],
+        ]
+    )
+    return rows
+
+
 def _write_attainment_outputs(
     co_results: list[COAttainmentResult],
     po_results: list[POAttainmentResult],
+    mapping: dict[str, dict[str, int]],
     config: WeightConfig,
     out_dir: str,
 ) -> dict[str, Path]:
@@ -224,6 +255,7 @@ def _write_attainment_outputs(
     po_path = output_dir / "po_attainment_summary.csv"
     target_path = output_dir / "target_achievement.csv"
     summary_path = output_dir / "course_summary.json"
+    matrix_view_path = output_dir / "po_attainment_matrix.csv"
 
     with co_path.open("w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=list(COAttainmentResult.__dataclass_fields__.keys()))
@@ -261,11 +293,16 @@ def _write_attainment_outputs(
 
     summary_path.write_text(json.dumps(course_summary, indent=2))
 
+    with matrix_view_path.open("w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerows(build_po_attainment_matrix(co_results, po_results, mapping, config))
+
     return {
         "co_summary": co_path,
         "po_summary": po_path,
         "target_achievement": target_path,
         "course_summary": summary_path,
+        "po_matrix": matrix_view_path,
     }
 
 
@@ -277,7 +314,7 @@ def run_attainment_analysis_from_objects(
 ) -> dict[str, Path]:
     co_results = compute_co_attainment(co_inputs, config)
     po_results = compute_po_attainment(co_results, mapping, config)
-    return _write_attainment_outputs(co_results, po_results, config, out_dir)
+    return _write_attainment_outputs(co_results, po_results, mapping, config, out_dir)
 
 
 def run_attainment_analysis(

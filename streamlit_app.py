@@ -82,6 +82,60 @@ def _read_matrix_from_string(text: str) -> tuple[list[str], list[list[str]]]:
     return reader[0], reader[1:]
 
 
+def _po_matrix_html(rows: list[list[str]]) -> str:
+    """Render the PO attainment matrix with a divider before the summary rows."""
+    if not rows:
+        return ""
+    header, *body = rows
+    # Last 4 rows are the summary footer: weighted, percentage, scaled, target
+    footer_start = max(1, len(body) - 4)
+    data_rows = body[:footer_start]
+    footer_rows = body[footer_start:]
+
+    html = [
+        "<table style='border-collapse: collapse; width: 100%; font-size: 0.9em'>",
+        "<thead><tr>",
+    ]
+    for col in header:
+        html.append(
+            f"<th style='border:1px solid #ccc; padding:6px; background:#eef1f7; "
+            "text-align:center;'>" + col + "</th>"
+        )
+    html.append("</tr></thead><tbody>")
+
+    for row in data_rows:
+        html.append("<tr>")
+        for i, val in enumerate(row):
+            if i == 0:
+                html.append(
+                    "<td style='border:1px solid #ccc; padding:6px; font-weight:600; "
+                    f"background:#f7f9fc'>{val}</td>"
+                )
+            else:
+                html.append(
+                    "<td style='border:1px solid #ccc; padding:6px; text-align:center'>"
+                    f"{val}</td>"
+                )
+        html.append("</tr>")
+
+    for row in footer_rows:
+        is_target = row[0].startswith("target_")
+        bg = "#e8f5e9" if is_target else "#fff8e1"
+        html.append("<tr>")
+        for i, val in enumerate(row):
+            style = (
+                "border:1px solid #ccc; padding:6px; font-weight:600; "
+                f"background:{bg};"
+            )
+            if i > 0:
+                style += " text-align:center;"
+            html.append(f"<td style='{style}'>{val}</td>")
+        html.append("</tr>")
+
+    html.append("</tbody></table>")
+    return "".join(html)
+
+
 def _co_attainment_template_csv(co_ids: list[str]) -> str:
     buffer = StringIO()
     writer = csv.writer(buffer)
@@ -406,11 +460,13 @@ def _attainment_tab() -> None:
             po_summary = _read_csv_rows(paths["po_summary"])
             target_summary = _read_csv_rows(paths["target_achievement"])
             course_summary = json.loads(paths["course_summary"].read_text())
+            po_matrix_rows = list(csv.reader(StringIO(paths["po_matrix"].read_text())))
 
         st.session_state["co_summary"] = co_summary
         st.session_state["po_summary"] = po_summary
         st.session_state["target_summary"] = target_summary
         st.session_state["course_summary"] = course_summary
+        st.session_state["po_matrix_rows"] = po_matrix_rows
 
     if "co_summary" not in st.session_state:
         return
@@ -421,13 +477,22 @@ def _attainment_tab() -> None:
     st.markdown("### PO Attainment Summary")
     st.dataframe(st.session_state["po_summary"], use_container_width=True)
 
+    if "po_matrix_rows" in st.session_state:
+        st.markdown("### PO / PSO Attainment Matrix (spreadsheet view)")
+        st.markdown(_po_matrix_html(st.session_state["po_matrix_rows"]), unsafe_allow_html=True)
+        st.caption(
+            "First column = Final CO attainment for each CO row. Footer rows are the "
+            "PO/PSO roll-up: weighted attainment, percentage, attainment on a scale of 3, "
+            "and target-achieved Y/N."
+        )
+
     st.markdown("### Target Achievement")
     st.dataframe(st.session_state["target_summary"], use_container_width=True)
 
     st.markdown("### Course Summary")
     st.json(st.session_state["course_summary"])
 
-    d1, d2, d3 = st.columns(3)
+    d1, d2, d3, d4 = st.columns(4)
     with d1:
         st.download_button(
             "Export CO Summary CSV",
@@ -443,6 +508,16 @@ def _attainment_tab() -> None:
             mime="text/csv",
         )
     with d3:
+        st.download_button(
+            "Export PO Matrix CSV",
+            data=_csv_from_matrix(
+                st.session_state["po_matrix_rows"][0],
+                st.session_state["po_matrix_rows"][1:],
+            ),
+            file_name="po_attainment_matrix.csv",
+            mime="text/csv",
+        )
+    with d4:
         st.download_button(
             "Export Target Achievement CSV",
             data=_csv_from_rows(st.session_state["target_summary"]),

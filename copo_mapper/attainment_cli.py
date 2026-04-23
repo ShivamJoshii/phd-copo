@@ -24,6 +24,7 @@ def main() -> None:
     )
     print(f"Saved CO summary: {paths['co_summary']}")
     print(f"Saved PO summary: {paths['po_summary']}")
+    print(f"Saved PO matrix view: {paths['po_matrix']}")
     print(f"Saved target achievement: {paths['target_achievement']}")
     print(f"Saved course summary: {paths['course_summary']}")
 

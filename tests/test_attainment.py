@@ -64,6 +64,7 @@ class AttainmentEngineTest(unittest.TestCase):
             self.assertTrue(paths["po_summary"].exists())
             self.assertTrue(paths["target_achievement"].exists())
             self.assertTrue(paths["course_summary"].exists())
+            self.assertTrue(paths["po_matrix"].exists())
 
             with paths["co_summary"].open() as f:
                 co_rows = list(csv.DictReader(f))
@@ -122,6 +123,20 @@ class AttainmentEngineTest(unittest.TestCase):
             self.assertAlmostEqual(float(po_rows["PO1"]["percentage"]), 70.76, places=1)
             self.assertAlmostEqual(float(po_rows["PO1"]["scaled_attainment"]), 2.12, places=2)
             self.assertEqual(po_rows["PO1"]["target_achieved"], "Y")
+
+            with paths["po_matrix"].open() as f:
+                matrix_rows = list(csv.reader(f))
+            # header + 4 CO rows + 4 footer rows (weighted, percentage, scaled, target)
+            self.assertEqual(len(matrix_rows), 1 + 4 + 4)
+            self.assertEqual(matrix_rows[0], ["course_outcome", "PO1", "PO2", "PO3", "PO4"])
+            # First data row: final CO1 attainment then mapping values
+            self.assertEqual(matrix_rows[1][0], "0.7567")
+            self.assertEqual(matrix_rows[1][1:], ["3", "3", "3", "3"])
+            # Footer labels
+            self.assertEqual(matrix_rows[-4][0], "weighted_attainment")
+            self.assertEqual(matrix_rows[-3][0], "attainment_percentage")
+            self.assertEqual(matrix_rows[-2][0], "attainment_on_scale_of_3")
+            self.assertTrue(matrix_rows[-1][0].startswith("target_1.4"))
 
 
 if __name__ == "__main__":
