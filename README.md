@@ -62,23 +62,47 @@ Expected outputs:
 
 ## Input format
 
-`co.json`:
+All Stage 1 and Stage 2 input files accept **either JSON or CSV**. The parser is selected by file extension (`.json` or `.csv`).
+
+### Stage 1
+
+`co.json` / `co.csv` — columns **`CO`** and **`Description for CO`**.
 
 ```json
 [
-  {"id": "CO1", "text": "Design and implement relational database solutions."},
-  {"id": "CO2", "text": "Analyze algorithmic efficiency for real-world problems."}
+  {"CO": "CO1", "Description for CO": "Design and implement relational database solutions."},
+  {"CO": "CO2", "Description for CO": "Analyze algorithmic efficiency for real-world problems."}
 ]
 ```
 
-`po.json`:
+```csv
+CO,Description for CO
+CO1,Design and implement relational database solutions.
+CO2,Analyze algorithmic efficiency for real-world problems.
+```
+
+`po.json` / `po.csv` — columns **`PO`** and **`Description for PO`**.
 
 ```json
 [
-  {"id": "PO1", "text": "Identify, formulate, and solve complex engineering problems."},
-  {"id": "PO2", "text": "Design solutions that meet specified needs."}
+  {"PO": "PO1", "Description for PO": "Identify, formulate, and solve complex engineering problems."},
+  {"PO": "PO2", "Description for PO": "Design solutions that meet specified needs."}
 ]
 ```
+
+```csv
+PO,Description for PO
+PO1,"Identify, formulate, and solve complex engineering problems."
+PO2,Design solutions that meet specified needs.
+```
+
+### Stage 2
+
+`co_attainment.json` / `co_attainment.csv` — columns `co_id, ma_attainment, ea_attainment, indirect_attainment`.
+
+`attainment_config.json` / `attainment_config.csv` — keys `ma_weight, ea_weight, direct_weight, indirect_weight, co_target_level, po_target_level` (single-row CSV or JSON object).
+
+`mapping_matrix.csv` — first column `co_id`, remaining columns are PO ids.
 
 ## Architecture mapping to specification
 

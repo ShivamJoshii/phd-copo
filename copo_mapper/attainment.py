@@ -107,8 +107,33 @@ def compute_po_attainment(
     return results
 
 
+def _read_tabular(path: Path) -> list[dict[str, str]]:
+    suffix = path.suffix.lower()
+    if suffix == ".csv":
+        with path.open(newline="") as f:
+            return list(csv.DictReader(f))
+    if suffix == ".json":
+        data = json.loads(path.read_text())
+        if not isinstance(data, list):
+            raise ValueError(f"{path.name}: JSON input must be a list of objects.")
+        return data
+    raise ValueError(f"{path.name}: unsupported extension '{suffix}'. Use .json or .csv.")
+
+
 def load_weight_config(path: str) -> WeightConfig:
-    data = json.loads(Path(path).read_text())
+    p = Path(path)
+    suffix = p.suffix.lower()
+    if suffix == ".csv":
+        with p.open(newline="") as f:
+            rows = list(csv.DictReader(f))
+        if len(rows) != 1:
+            raise ValueError(f"{p.name}: config CSV must contain exactly one data row.")
+        data = rows[0]
+    elif suffix == ".json":
+        data = json.loads(p.read_text())
+    else:
+        raise ValueError(f"{p.name}: unsupported extension '{suffix}'. Use .json or .csv.")
+
     return WeightConfig(
         ma_weight=float(data["ma_weight"]),
         ea_weight=float(data["ea_weight"]),
@@ -120,15 +145,15 @@ def load_weight_config(path: str) -> WeightConfig:
 
 
 def load_co_attainment_input(path: str) -> list[COAttainmentInput]:
-    data = json.loads(Path(path).read_text())
+    rows = _read_tabular(Path(path))
     return [
         COAttainmentInput(
-            co_id=row["co_id"],
+            co_id=str(row["co_id"]).strip(),
             ma_attainment=float(row["ma_attainment"]),
             ea_attainment=float(row["ea_attainment"]),
             indirect_attainment=float(row["indirect_attainment"]),
         )
-        for row in data
+        for row in rows
     ]
 
 

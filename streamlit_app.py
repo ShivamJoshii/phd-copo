@@ -9,7 +9,16 @@ from pathlib import Path
 import streamlit as st
 
 from copo_mapper.attainment import run_attainment_analysis
-from copo_mapper.pipeline import run_pairwise_mapping
+from copo_mapper.pipeline import (
+    CO_ID_KEY,
+    CO_TEXT_KEY,
+    PO_ID_KEY,
+    PO_TEXT_KEY,
+    run_pairwise_mapping,
+)
+
+OUTCOME_UPLOAD_TYPES = ["json", "csv"]
+TABULAR_UPLOAD_TYPES = ["json", "csv"]
 
 COLOR_BY_STRENGTH = {
     0: "#f8d7da",
@@ -19,19 +28,37 @@ COLOR_BY_STRENGTH = {
 }
 
 
-def _load_outcome_json(uploaded_file) -> list[dict[str, str]]:
-    raw = uploaded_file.getvalue().decode("utf-8")
-    data = json.loads(raw)
-    if not isinstance(data, list):
-        raise ValueError("JSON must be a list of objects with id and text fields.")
-    for item in data:
-        if "id" not in item or "text" not in item:
-            raise ValueError("Each item must include 'id' and 'text'.")
-    return data
+def _upload_suffix(uploaded_file) -> str:
+    name = (uploaded_file.name or "").lower()
+    if name.endswith(".csv"):
+        return ".csv"
+    if name.endswith(".json"):
+        return ".json"
+    raise ValueError(f"Unsupported file type: {uploaded_file.name}. Use .json or .csv.")
 
 
-def _load_generic_json(uploaded_file) -> list[dict] | dict:
+def _load_outcome_upload(uploaded_file, id_key: str, text_key: str) -> list[dict[str, str]]:
+    suffix = _upload_suffix(uploaded_file)
     raw = uploaded_file.getvalue().decode("utf-8")
+    if suffix == ".csv":
+        rows: list[dict[str, str]] = list(csv.DictReader(StringIO(raw)))
+    else:
+        rows = json.loads(raw)
+        if not isinstance(rows, list):
+            raise ValueError(
+                f"JSON must be a list of objects with '{id_key}' and '{text_key}' fields."
+            )
+    for item in rows:
+        if id_key not in item or text_key not in item:
+            raise ValueError(f"Each row must include '{id_key}' and '{text_key}'.")
+    return rows
+
+
+def _load_generic_upload(uploaded_file) -> list[dict] | dict:
+    suffix = _upload_suffix(uploaded_file)
+    raw = uploaded_file.getvalue().decode("utf-8")
+    if suffix == ".csv":
+        return list(csv.DictReader(StringIO(raw)))
     return json.loads(raw)
 
 
@@ -94,29 +121,39 @@ def _mapping_tab() -> None:
 
     with st.sidebar:
         st.header("Stage 1 Inputs")
-        co_upload = st.file_uploader("Upload CO JSON", type=["json"], key="co_upload")
-        po_upload = st.file_uploader("Upload PO JSON", type=["json"], key="po_upload")
+        co_upload = st.file_uploader(
+            f"Upload CO file (columns: {CO_ID_KEY}, {CO_TEXT_KEY})",
+            type=OUTCOME_UPLOAD_TYPES,
+            key="co_upload",
+        )
+        po_upload = st.file_uploader(
+            f"Upload PO file (columns: {PO_ID_KEY}, {PO_TEXT_KEY})",
+            type=OUTCOME_UPLOAD_TYPES,
+            key="po_upload",
+        )
 
     if co_upload is None or po_upload is None:
-        st.info("Please upload both CO and PO JSON files to run mapping.")
+        st.info("Please upload both CO and PO files (JSON or CSV) to run mapping.")
         return
 
     if st.button("Run Mapping", type="primary"):
         try:
-            co_data = _load_outcome_json(co_upload)
-            po_data = _load_outcome_json(po_upload)
+            _load_outcome_upload(co_upload, CO_ID_KEY, CO_TEXT_KEY)
+            _load_outcome_upload(po_upload, PO_ID_KEY, PO_TEXT_KEY)
+            co_suffix = _upload_suffix(co_upload)
+            po_suffix = _upload_suffix(po_upload)
         except ValueError as err:
             st.error(str(err))
             return
 
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
-            co_path = tmp_path / "co.json"
-            po_path = tmp_path / "po.json"
+            co_path = tmp_path / f"co{co_suffix}"
+            po_path = tmp_path / f"po{po_suffix}"
             out_dir = tmp_path / "out"
 
-            co_path.write_text(json.dumps(co_data))
-            po_path.write_text(json.dumps(po_data))
+            co_path.write_bytes(co_upload.getvalue())
+            po_path.write_bytes(po_upload.getvalue())
             pair_path, matrix_path = run_pairwise_mapping(str(co_path), str(po_path), str(out_dir))
 
             pair_rows = _read_csv_rows(pair_path)
@@ -183,16 +220,16 @@ def _attainment_tab() -> None:
     with st.sidebar:
         st.header("Stage 2 Inputs")
         co_att_upload = st.file_uploader(
-            "Upload CO Attainment JSON",
-            type=["json"],
+            "Upload CO Attainment (JSON or CSV)",
+            type=TABULAR_UPLOAD_TYPES,
             key="co_att_upload",
-            help="List of {co_id, ma_attainment, ea_attainment, indirect_attainment}",
+            help="Columns: co_id, ma_attainment, ea_attainment, indirect_attainment",
         )
         config_upload = st.file_uploader(
-            "Upload Attainment Config JSON",
-            type=["json"],
+            "Upload Attainment Config (JSON or CSV)",
+            type=TABULAR_UPLOAD_TYPES,
             key="config_upload",
-            help="{ma_weight, ea_weight, direct_weight, indirect_weight, co_target_level, po_target_level}",
+            help="Keys: ma_weight, ea_weight, direct_weight, indirect_weight, co_target_level, po_target_level",
         )
         matrix_upload = st.file_uploader(
             "Optional: Upload Mapping Matrix CSV",
@@ -202,12 +239,18 @@ def _attainment_tab() -> None:
         )
 
     if co_att_upload is None or config_upload is None:
-        st.info("Upload CO attainment JSON and config JSON to run Stage 2.")
+        st.info("Upload CO attainment and config files (JSON or CSV) to run Stage 2.")
         return
 
     if st.button("Run Attainment Analysis", type="primary"):
-        co_att_data = _load_generic_json(co_att_upload)
-        config_data = _load_generic_json(config_upload)
+        try:
+            _load_generic_upload(co_att_upload)
+            _load_generic_upload(config_upload)
+            co_att_suffix = _upload_suffix(co_att_upload)
+            cfg_suffix = _upload_suffix(config_upload)
+        except ValueError as err:
+            st.error(str(err))
+            return
 
         matrix_csv = None
         if matrix_upload is not None:
@@ -221,13 +264,13 @@ def _attainment_tab() -> None:
 
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
-            co_att_path = tmp_path / "co_attainment.json"
-            cfg_path = tmp_path / "attainment_config.json"
+            co_att_path = tmp_path / f"co_attainment{co_att_suffix}"
+            cfg_path = tmp_path / f"attainment_config{cfg_suffix}"
             matrix_path = tmp_path / "matrix.csv"
             out_dir = tmp_path / "attainment_out"
 
-            co_att_path.write_text(json.dumps(co_att_data))
-            cfg_path.write_text(json.dumps(config_data))
+            co_att_path.write_bytes(co_att_upload.getvalue())
+            cfg_path.write_bytes(config_upload.getvalue())
             matrix_path.write_text(matrix_csv)
 
             paths = run_attainment_analysis(
