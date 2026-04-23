@@ -1,5 +1,5 @@
 [
-  {"CO": "CO1", "Description for CO": "Design and implement relational database solutions for real-world applications."},
-  {"CO": "CO2", "Description for CO": "Analyze and optimize database queries for efficient information retrieval."},
-  {"CO": "CO3", "Description for CO": "Communicate technical findings through structured written reports and presentations."}
+  {"CO": "CO1", "description": "Design and implement relational database solutions for real-world applications."},
+  {"CO": "CO2", "description": "Analyze and optimize database queries for efficient information retrieval."},
+  {"CO": "CO3", "description": "Communicate technical findings through structured written reports and presentations."}
 ]

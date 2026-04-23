@@ -66,32 +66,32 @@ All Stage 1 and Stage 2 input files accept **either JSON or CSV**. The parser is
 
 ### Stage 1
 
-`co.json` / `co.csv` — columns **`CO`** and **`Description for CO`**.
+`co.json` / `co.csv` — columns **`CO`** and **`description`**.
 
 ```json
 [
-  {"CO": "CO1", "Description for CO": "Design and implement relational database solutions."},
-  {"CO": "CO2", "Description for CO": "Analyze algorithmic efficiency for real-world problems."}
+  {"CO": "CO1", "description": "Design and implement relational database solutions."},
+  {"CO": "CO2", "description": "Analyze algorithmic efficiency for real-world problems."}
 ]
 ```
 
 ```csv
-CO,Description for CO
+CO,description
 CO1,Design and implement relational database solutions.
 CO2,Analyze algorithmic efficiency for real-world problems.
 ```
 
-`po.json` / `po.csv` — columns **`PO`** and **`Description for PO`**.
+`po.json` / `po.csv` — columns **`PO`** and **`description`**.
 
 ```json
 [
-  {"PO": "PO1", "Description for PO": "Identify, formulate, and solve complex engineering problems."},
-  {"PO": "PO2", "Description for PO": "Design solutions that meet specified needs."}
+  {"PO": "PO1", "description": "Identify, formulate, and solve complex engineering problems."},
+  {"PO": "PO2", "description": "Design solutions that meet specified needs."}
 ]
 ```
 
 ```csv
-PO,Description for PO
+PO,description
 PO1,"Identify, formulate, and solve complex engineering problems."
 PO2,Design solutions that meet specified needs.
 ```

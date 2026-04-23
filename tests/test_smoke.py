@@ -14,8 +14,8 @@ class PipelineSmokeTest(unittest.TestCase):
             po_file = tmp_path / "po.json"
             out_dir = tmp_path / "out"
 
-            co_file.write_text('[{"CO":"CO1","Description for CO":"Design software solutions."}]')
-            po_file.write_text('[{"PO":"PO1","Description for PO":"Design engineering solutions."}]')
+            co_file.write_text('[{"CO":"CO1","description":"Design software solutions."}]')
+            po_file.write_text('[{"PO":"PO1","description":"Design engineering solutions."}]')
 
             pair_path, matrix_path = run_pairwise_mapping(str(co_file), str(po_file), str(out_dir))
 
