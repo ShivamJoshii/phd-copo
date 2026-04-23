@@ -9,6 +9,7 @@ from pathlib import Path
 import streamlit as st
 
 from copo_mapper.attainment import run_attainment_analysis
+from copo_mapper.io_utils import normalize_keys
 from copo_mapper.pipeline import (
     CO_ID_KEY,
     CO_TEXT_KEY,
@@ -48,9 +49,14 @@ def _load_outcome_upload(uploaded_file, id_key: str, text_key: str) -> list[dict
             raise ValueError(
                 f"JSON must be a list of objects with '{id_key}' and '{text_key}' fields."
             )
+    id_target = id_key.strip().lower()
+    text_target = text_key.strip().lower()
     for item in rows:
-        if id_key not in item or text_key not in item:
-            raise ValueError(f"Each row must include '{id_key}' and '{text_key}'.")
+        normalized = normalize_keys(item)
+        if id_target not in normalized or text_target not in normalized:
+            raise ValueError(
+                f"Each row must include '{id_key}' and '{text_key}' (case-insensitive)."
+            )
     return rows
 
 

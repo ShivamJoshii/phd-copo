@@ -4,6 +4,7 @@ import csv
 import json
 from pathlib import Path
 
+from .io_utils import normalize_keys
 from .preprocess import normalize_text
 from .scoring import score_pair
 from .semantic import tfidf_pair_similarity
@@ -27,13 +28,22 @@ def _load_outcomes(path: Path, id_key: str, text_key: str) -> list[Outcome]:
     else:
         raise ValueError(f"{path.name}: unsupported extension '{suffix}'. Use .json or .csv.")
 
+    id_target = id_key.strip().lower()
+    text_target = text_key.strip().lower()
     outcomes: list[Outcome] = []
     for item in rows:
-        if id_key not in item or text_key not in item:
+        normalized = normalize_keys(item)
+        if id_target not in normalized or text_target not in normalized:
             raise ValueError(
-                f"{path.name}: each row must include columns '{id_key}' and '{text_key}'."
+                f"{path.name}: each row must include columns '{id_key}' and '{text_key}' "
+                "(case-insensitive)."
             )
-        outcomes.append(Outcome(id=str(item[id_key]).strip(), text=str(item[text_key]).strip()))
+        outcomes.append(
+            Outcome(
+                id=str(normalized[id_target]).strip(),
+                text=str(normalized[text_target]).strip(),
+            )
+        )
     return outcomes
 
 
