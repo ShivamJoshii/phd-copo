@@ -11,15 +11,15 @@ Given a list of Course Outcomes (COs) and Program Outcomes (POs), the system:
 3. Computes semantic similarity (TF-IDF cosine).
 4. Predicts mapping strength on a 4-point scale (`0,1,2,3`).
 5. Exports pairwise predictions and a matrix view.
+6. Supports optional SBERT semantic similarity (with automatic TF-IDF fallback if not installed).
 
 ## Project status
 
-This is an initial MVP that focuses on a transparent, explainable baseline architecture with clear extension points for:
+This is an MVP with:
 
-- SBERT embeddings
-- cross-encoder scoring
-- XGBoost-based final classification
-- faculty-in-the-loop review workflows
+- a default transparent baseline (TF-IDF-style cosine over normalized text tokens),
+- optional SBERT semantic embeddings via `sentence-transformers`,
+- rule-based educational feature fusion for final 4-class mapping.
 
 ## Quick start
 
@@ -27,6 +27,12 @@ This is an initial MVP that focuses on a transparent, explainable baseline archi
 python -m venv .venv
 source .venv/bin/activate
 pip install -e .
+```
+
+To enable SBERT:
+
+```bash
+pip install -e ".[nlp]"
 ```
 
 ### Run pairwise prediction (rule-based baseline)
@@ -37,6 +43,19 @@ copo-map \
   --po-file examples/po.json \
   --out-dir outputs
 ```
+
+### Run with SBERT semantic similarity
+
+```bash
+copo-map \
+  --co-file examples/co.json \
+  --po-file examples/po.json \
+  --out-dir outputs \
+  --use-sbert \
+  --sbert-model sentence-transformers/all-MiniLM-L6-v2
+```
+
+If `sentence-transformers` is unavailable, the pipeline falls back to TF-IDF-style cosine automatically.
 
 Outputs:
 
@@ -104,6 +123,29 @@ PO2,Design solutions that meet specified needs.
 
 `mapping_matrix.csv` — first column `co_id`, remaining columns are PO ids.
 
+## Methodology (what the system is using and how it works)
+
+For each CO-PO pair, the scoring pipeline works as follows:
+
+1. **Text preprocessing**  
+   CO and PO descriptions are normalized (case-folding, punctuation cleanup, token normalization) before feature extraction.
+2. **Pair generation**  
+   The full Cartesian product of COs and POs is built, so every CO is compared against every PO.
+3. **Semantic similarity (Layer 3)**  
+   - **Default**: TF-IDF-style cosine proxy over token-frequency vectors.  
+   - **Optional (`--use-sbert`)**: SBERT sentence embeddings using a Sentence-Transformers model (default: `all-MiniLM-L6-v2`), then cosine similarity in embedding space.
+4. **Educational feature extraction (Layer 4/5)**  
+   - Bloom/action-intent detection per outcome and Bloom gap between CO and PO,  
+   - domain keyword overlap (Jaccard),  
+   - lexical token overlap (Jaccard).
+5. **Composite confidence and label mapping (Layer 6)**  
+   A weighted composite score is computed:  
+   `0.45*semantic + 0.20*domain + 0.15*token + 0.20*bloom_alignment`  
+   Then mapped to strengths: `0/1/2/3` using fixed thresholds.
+6. **Outputs**  
+   - `pair_predictions.csv` with per-pair score, confidence, explanation, and semantic method used,  
+   - `matrix.csv` as CO × PO strength table.
+
 ## Architecture mapping to specification
 
 - **Layer 1**: preprocessing (`copo_mapper/preprocess.py`)
@@ -114,10 +156,9 @@ PO2,Design solutions that meet specified needs.
 
 ## Next milestones
 
-1. Add sentence-transformer embeddings.
-2. Add cross-encoder pair scorer.
-3. Add trainable XGBoost classifier on labeled faculty data.
-4. Build review UI/API for human corrections and feedback loop.
+1. Add cross-encoder pair scorer.
+2. Add trainable XGBoost classifier on labeled faculty data.
+3. Build review UI/API for human corrections and feedback loop.
 
 
 
