@@ -149,6 +149,31 @@ def _mapping_tab() -> None:
             type=OUTCOME_UPLOAD_TYPES,
             key="po_upload",
         )
+        semantic_backend = st.selectbox(
+            "Semantic Backend",
+            options=["tfidf", "sbert", "bert"],
+            index=0,
+            help=(
+                "Choose similarity engine for Stage 1 mapping. "
+                "If neural dependencies are missing for SBERT/BERT, mapping falls back to TF-IDF."
+            ),
+            key="semantic_backend",
+        )
+        default_model_by_backend = {
+            "tfidf": "",
+            "sbert": "sentence-transformers/all-MiniLM-L6-v2",
+            "bert": "google-bert/bert-base-uncased",
+        }
+        semantic_model_override = st.text_input(
+            "Semantic Model (optional override)",
+            value="",
+            help=(
+                "Model checkpoint name for selected backend. "
+                "Leave empty to use backend default."
+            ),
+            key="semantic_model",
+        ).strip()
+        semantic_model = semantic_model_override or default_model_by_backend[semantic_backend]
 
     if co_upload is None or po_upload is None:
         st.info("Please upload both CO and PO files (JSON or CSV) to run mapping.")
@@ -172,7 +197,13 @@ def _mapping_tab() -> None:
 
             co_path.write_bytes(co_upload.getvalue())
             po_path.write_bytes(po_upload.getvalue())
-            pair_path, matrix_path = run_pairwise_mapping(str(co_path), str(po_path), str(out_dir))
+            pair_path, matrix_path = run_pairwise_mapping(
+                str(co_path),
+                str(po_path),
+                str(out_dir),
+                semantic_backend=semantic_backend,
+                semantic_model=semantic_model or None,
+            )
 
             pair_rows = _read_csv_rows(pair_path)
             matrix_header, matrix_rows = _read_matrix(matrix_path)
@@ -212,6 +243,7 @@ def _mapping_tab() -> None:
         st.write(f"**PO ({selected['po_id']}):** {selected['po_text']}")
         st.write(f"**Predicted strength:** {selected['predicted_strength']}")
         st.write(f"**Confidence:** {selected.get('confidence', 'N/A')}")
+        st.write(f"**Semantic method used:** {selected.get('semantic_method', 'N/A')}")
         st.write(f"**Explanation:** {selected.get('explanation', 'N/A')}")
 
     c1, c2 = st.columns(2)

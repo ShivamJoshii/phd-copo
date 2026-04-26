@@ -202,6 +202,10 @@ In the same Streamlit app, you now have two tabs:
 
 So attainment is **not a separate app** in the browser workflow anymore.
 
+Stage 1 sidebar also includes:
+- **Semantic Backend** selector (`tfidf`, `sbert`, `bert`)
+- **Semantic Model** optional override input (uses backend default when left empty)
+
 Recommended flow:
 1. In **Stage 1**, upload `CO` and `PO` files (JSON or CSV).
 2. Click **Run Mapping**.
