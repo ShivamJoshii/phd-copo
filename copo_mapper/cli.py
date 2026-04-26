@@ -11,14 +11,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--po-file", required=True, help="Path to PO JSON file")
     parser.add_argument("--out-dir", default="outputs", help="Output directory")
     parser.add_argument(
-        "--use-sbert",
-        action="store_true",
-        help="Use SBERT semantic similarity if sentence-transformers is installed.",
+        "--semantic-backend",
+        choices=["tfidf", "sbert", "bert"],
+        default="tfidf",
+        help="Semantic model backend to use (falls back to TF-IDF if unavailable).",
     )
     parser.add_argument(
-        "--sbert-model",
-        default="sentence-transformers/all-MiniLM-L6-v2",
-        help="Sentence-Transformers model name to use with --use-sbert.",
+        "--semantic-model",
+        default=None,
+        help="Optional model name for selected backend (SBERT/BERT).",
     )
     return parser
 
@@ -29,8 +30,8 @@ def main() -> None:
         args.co_file,
         args.po_file,
         args.out_dir,
-        use_sbert=args.use_sbert,
-        sbert_model=args.sbert_model,
+        semantic_backend=args.semantic_backend,
+        semantic_model=args.semantic_model,
     )
     print(f"Saved pair predictions: {pair_path}")
     print(f"Saved matrix: {matrix_path}")

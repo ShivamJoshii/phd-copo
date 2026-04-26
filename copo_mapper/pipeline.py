@@ -7,7 +7,7 @@ from pathlib import Path
 from .io_utils import normalize_keys
 from .preprocess import normalize_text
 from .scoring import score_pair
-from .semantic import sbert_pair_similarity, tfidf_pair_similarity
+from .semantic import bert_pair_similarity, sbert_pair_similarity, tfidf_pair_similarity
 from .types import Outcome
 
 CO_ID_KEY = "CO"
@@ -52,8 +52,8 @@ def run_pairwise_mapping(
     po_file: str,
     out_dir: str,
     *,
-    use_sbert: bool = False,
-    sbert_model: str = "sentence-transformers/all-MiniLM-L6-v2",
+    semantic_backend: str = "tfidf",
+    semantic_model: str | None = None,
 ) -> tuple[Path, Path]:
     co_items = _load_outcomes(Path(co_file), id_key=CO_ID_KEY, text_key=CO_TEXT_KEY)
     po_items = _load_outcomes(Path(po_file), id_key=PO_ID_KEY, text_key=PO_TEXT_KEY)
@@ -79,13 +79,24 @@ def run_pairwise_mapping(
                 }
             )
 
-    semantic_method = "tfidf"
+    semantic_backend = semantic_backend.lower().strip()
     similarities = tfidf_pair_similarity(co_norms, po_norms)
-    if use_sbert:
-        sbert_similarities = sbert_pair_similarity(co_norms, po_norms, model_name=sbert_model)
+    semantic_method = "tfidf"
+
+    if semantic_backend == "sbert":
+        model_name = semantic_model or "sentence-transformers/all-MiniLM-L6-v2"
+        sbert_similarities = sbert_pair_similarity(co_norms, po_norms, model_name=model_name)
         if sbert_similarities is not None:
             similarities = sbert_similarities
-            semantic_method = f"sbert:{sbert_model}"
+            semantic_method = f"sbert:{model_name}"
+    elif semantic_backend == "bert":
+        model_name = semantic_model or "google-bert/bert-base-uncased"
+        bert_similarities = bert_pair_similarity(co_norms, po_norms, model_name=model_name)
+        if bert_similarities is not None:
+            similarities = bert_similarities
+            semantic_method = f"bert:{model_name}"
+    elif semantic_backend != "tfidf":
+        raise ValueError("semantic_backend must be one of: tfidf, sbert, bert")
 
     for i, row in enumerate(rows):
         result = score_pair(str(row["co_norm"]), str(row["po_norm"]), similarities[i])

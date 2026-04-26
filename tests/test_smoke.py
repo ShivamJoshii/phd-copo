@@ -30,7 +30,7 @@ class PipelineSmokeTest(unittest.TestCase):
             self.assertIn(rows[0]["predicted_strength"], {"0", "1", "2", "3"})
             self.assertIn(rows[0]["semantic_method"], {"tfidf"})
 
-    def test_sbert_flag_falls_back_to_tfidf_when_unavailable(self) -> None:
+    def test_sbert_backend_falls_back_to_tfidf_when_unavailable(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             co_file = tmp_path / "co.json"
@@ -44,7 +44,7 @@ class PipelineSmokeTest(unittest.TestCase):
                 str(co_file),
                 str(po_file),
                 str(out_dir),
-                use_sbert=True,
+                semantic_backend="sbert",
             )
 
             with pair_path.open() as f:
@@ -52,6 +52,29 @@ class PipelineSmokeTest(unittest.TestCase):
 
             self.assertEqual(len(rows), 1)
             self.assertIn(rows[0]["semantic_method"], {"tfidf", "sbert:sentence-transformers/all-MiniLM-L6-v2"})
+
+    def test_bert_backend_falls_back_to_tfidf_when_unavailable(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            co_file = tmp_path / "co.json"
+            po_file = tmp_path / "po.json"
+            out_dir = tmp_path / "out"
+
+            co_file.write_text('[{"CO":"CO1","description":"Design software solutions."}]')
+            po_file.write_text('[{"PO":"PO1","description":"Design engineering solutions."}]')
+
+            pair_path, _ = run_pairwise_mapping(
+                str(co_file),
+                str(po_file),
+                str(out_dir),
+                semantic_backend="bert",
+            )
+
+            with pair_path.open() as f:
+                rows = list(csv.DictReader(f))
+
+            self.assertEqual(len(rows), 1)
+            self.assertIn(rows[0]["semantic_method"], {"tfidf", "bert:google-bert/bert-base-uncased"})
 
 
 if __name__ == "__main__":

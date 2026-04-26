@@ -11,14 +11,14 @@ Given a list of Course Outcomes (COs) and Program Outcomes (POs), the system:
 3. Computes semantic similarity (TF-IDF cosine).
 4. Predicts mapping strength on a 4-point scale (`0,1,2,3`).
 5. Exports pairwise predictions and a matrix view.
-6. Supports optional SBERT semantic similarity (with automatic TF-IDF fallback if not installed).
+6. Supports optional SBERT or BERT semantic similarity (with automatic TF-IDF fallback if unavailable).
 
 ## Project status
 
 This is an MVP with:
 
 - a default transparent baseline (TF-IDF-style cosine over normalized text tokens),
-- optional SBERT semantic embeddings via `sentence-transformers`,
+- optional SBERT or BERT semantic embeddings,
 - rule-based educational feature fusion for final 4-class mapping.
 
 ## Quick start
@@ -29,7 +29,7 @@ source .venv/bin/activate
 pip install -e .
 ```
 
-To enable SBERT:
+To enable SBERT/BERT backends:
 
 ```bash
 pip install -e ".[nlp]"
@@ -51,11 +51,22 @@ copo-map \
   --co-file examples/co.json \
   --po-file examples/po.json \
   --out-dir outputs \
-  --use-sbert \
-  --sbert-model sentence-transformers/all-MiniLM-L6-v2
+  --semantic-backend sbert \
+  --semantic-model sentence-transformers/all-MiniLM-L6-v2
 ```
 
-If `sentence-transformers` is unavailable, the pipeline falls back to TF-IDF-style cosine automatically.
+### Run with BERT semantic similarity
+
+```bash
+copo-map \
+  --co-file examples/co.json \
+  --po-file examples/po.json \
+  --out-dir outputs \
+  --semantic-backend bert \
+  --semantic-model google-bert/bert-base-uncased
+```
+
+If selected neural dependencies are unavailable, the pipeline falls back to TF-IDF-style cosine automatically.
 
 Outputs:
 
@@ -133,7 +144,8 @@ For each CO-PO pair, the scoring pipeline works as follows:
    The full Cartesian product of COs and POs is built, so every CO is compared against every PO.
 3. **Semantic similarity (Layer 3)**  
    - **Default**: TF-IDF-style cosine proxy over token-frequency vectors.  
-   - **Optional (`--use-sbert`)**: SBERT sentence embeddings using a Sentence-Transformers model (default: `all-MiniLM-L6-v2`), then cosine similarity in embedding space.
+   - **Optional (`--semantic-backend sbert`)**: SBERT sentence embeddings using a Sentence-Transformers model (default: `all-MiniLM-L6-v2`) and cosine in embedding space.  
+   - **Optional (`--semantic-backend bert`)**: BERT encoder hidden states (`bert-base-uncased` by default), mean-pooled over valid tokens, then cosine in embedding space.
 4. **Educational feature extraction (Layer 4/5)**  
    - Bloom/action-intent detection per outcome and Bloom gap between CO and PO,  
    - domain keyword overlap (Jaccard),  
@@ -145,6 +157,18 @@ For each CO-PO pair, the scoring pipeline works as follows:
 6. **Outputs**  
    - `pair_predictions.csv` with per-pair score, confidence, explanation, and semantic method used,  
    - `matrix.csv` as CO × PO strength table.
+
+### SBERT vs BERT: technical and procedural differences
+
+- **Training objective / representation quality**  
+  - **SBERT**: fine-tuned specifically for sentence-level similarity/retrieval, so sentence embeddings are directly optimized for cosine comparison.  
+  - **BERT**: base encoder pretraining is token-level (MLM/NSP style), so sentence embeddings are constructed indirectly via pooling.
+- **Embedding construction in this repo**  
+  - **SBERT path**: uses `SentenceTransformer.encode(..., normalize_embeddings=True)` then dot product (= cosine on normalized vectors).  
+  - **BERT path**: tokenizes text, runs `AutoModel`, mean-pools last hidden states with attention mask, L2-normalizes, then cosine.
+- **Typical trade-offs**  
+  - **SBERT** generally gives stronger semantic similarity quality out of the box for pair-matching tasks.  
+  - **BERT** gives flexibility to use any encoder checkpoint but may require more tuning or task-specific fine-tuning for best similarity accuracy.
 
 ## Architecture mapping to specification
 
