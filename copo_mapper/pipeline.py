@@ -7,7 +7,7 @@ from pathlib import Path
 from .io_utils import normalize_keys
 from .preprocess import normalize_text
 from .scoring import score_pair
-from .semantic import tfidf_pair_similarity
+from .semantic import sbert_pair_similarity, tfidf_pair_similarity
 from .types import Outcome
 
 CO_ID_KEY = "CO"
@@ -47,7 +47,14 @@ def _load_outcomes(path: Path, id_key: str, text_key: str) -> list[Outcome]:
     return outcomes
 
 
-def run_pairwise_mapping(co_file: str, po_file: str, out_dir: str) -> tuple[Path, Path]:
+def run_pairwise_mapping(
+    co_file: str,
+    po_file: str,
+    out_dir: str,
+    *,
+    use_sbert: bool = False,
+    sbert_model: str = "sentence-transformers/all-MiniLM-L6-v2",
+) -> tuple[Path, Path]:
     co_items = _load_outcomes(Path(co_file), id_key=CO_ID_KEY, text_key=CO_TEXT_KEY)
     po_items = _load_outcomes(Path(po_file), id_key=PO_ID_KEY, text_key=PO_TEXT_KEY)
 
@@ -72,13 +79,20 @@ def run_pairwise_mapping(co_file: str, po_file: str, out_dir: str) -> tuple[Path
                 }
             )
 
+    semantic_method = "tfidf"
     similarities = tfidf_pair_similarity(co_norms, po_norms)
+    if use_sbert:
+        sbert_similarities = sbert_pair_similarity(co_norms, po_norms, model_name=sbert_model)
+        if sbert_similarities is not None:
+            similarities = sbert_similarities
+            semantic_method = f"sbert:{sbert_model}"
 
     for i, row in enumerate(rows):
         result = score_pair(str(row["co_norm"]), str(row["po_norm"]), similarities[i])
         row["predicted_strength"] = result.score
         row["confidence"] = result.confidence
         row["explanation"] = result.explanation
+        row["semantic_method"] = semantic_method
 
     output_dir = Path(out_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -95,6 +109,7 @@ def run_pairwise_mapping(co_file: str, po_file: str, out_dir: str) -> tuple[Path
                 "po_text",
                 "predicted_strength",
                 "confidence",
+                "semantic_method",
                 "explanation",
             ],
         )
