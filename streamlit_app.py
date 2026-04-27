@@ -15,7 +15,7 @@ from copo_mapper.attainment import (
     load_mapping_matrix,
     run_attainment_analysis_from_objects,
 )
-from copo_mapper.io_utils import normalize_keys
+from copo_mapper.io_utils import decode_text_bytes, normalize_keys
 from copo_mapper.pipeline import (
     CO_ID_KEY,
     CO_TEXT_KEY,
@@ -46,7 +46,7 @@ def _upload_suffix(uploaded_file) -> str:
 
 def _load_outcome_upload(uploaded_file, id_key: str, text_key: str) -> list[dict[str, str]]:
     suffix = _upload_suffix(uploaded_file)
-    raw = uploaded_file.getvalue().decode("utf-8")
+    raw = decode_text_bytes(uploaded_file.getvalue(), source=uploaded_file.name or "upload")
     if suffix == ".csv":
         rows: list[dict[str, str]] = list(csv.DictReader(StringIO(raw)))
     else:
@@ -149,6 +149,31 @@ def _mapping_tab() -> None:
             type=OUTCOME_UPLOAD_TYPES,
             key="po_upload",
         )
+        semantic_backend = st.selectbox(
+            "Semantic Backend",
+            options=["tfidf", "sbert", "bert"],
+            index=0,
+            help=(
+                "Choose similarity engine for Stage 1 mapping. "
+                "If neural dependencies are missing for SBERT/BERT, mapping falls back to TF-IDF."
+            ),
+            key="semantic_backend",
+        )
+        default_model_by_backend = {
+            "tfidf": "",
+            "sbert": "sentence-transformers/all-MiniLM-L6-v2",
+            "bert": "google-bert/bert-base-uncased",
+        }
+        semantic_model_override = st.text_input(
+            "Semantic Model (optional override)",
+            value="",
+            help=(
+                "Model checkpoint name for selected backend. "
+                "Leave empty to use backend default."
+            ),
+            key="semantic_model",
+        ).strip()
+        semantic_model = semantic_model_override or default_model_by_backend[semantic_backend]
 
     if co_upload is None or po_upload is None:
         st.info("Please upload both CO and PO files (JSON or CSV) to run mapping.")
@@ -172,7 +197,13 @@ def _mapping_tab() -> None:
 
             co_path.write_bytes(co_upload.getvalue())
             po_path.write_bytes(po_upload.getvalue())
-            pair_path, matrix_path = run_pairwise_mapping(str(co_path), str(po_path), str(out_dir))
+            pair_path, matrix_path = run_pairwise_mapping(
+                str(co_path),
+                str(po_path),
+                str(out_dir),
+                semantic_backend=semantic_backend,
+                semantic_model=semantic_model or None,
+            )
 
             pair_rows = _read_csv_rows(pair_path)
             matrix_header, matrix_rows = _read_matrix(matrix_path)
@@ -212,6 +243,7 @@ def _mapping_tab() -> None:
         st.write(f"**PO ({selected['po_id']}):** {selected['po_text']}")
         st.write(f"**Predicted strength:** {selected['predicted_strength']}")
         st.write(f"**Confidence:** {selected.get('confidence', 'N/A')}")
+        st.write(f"**Semantic method used:** {selected.get('semantic_method', 'N/A')}")
         st.write(f"**Explanation:** {selected.get('explanation', 'N/A')}")
 
     c1, c2 = st.columns(2)
@@ -256,7 +288,7 @@ def _attainment_tab() -> None:
         )
 
     if matrix_upload is not None:
-        matrix_csv = matrix_upload.getvalue().decode("utf-8")
+        matrix_csv = decode_text_bytes(matrix_upload.getvalue(), source=matrix_upload.name or "matrix upload")
     else:
         matrix_csv = st.session_state.get("matrix_csv")
 

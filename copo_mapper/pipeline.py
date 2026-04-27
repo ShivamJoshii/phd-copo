@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import csv
 import json
+from io import StringIO
 from pathlib import Path
 
-from .io_utils import normalize_keys
+from .io_utils import normalize_keys, read_text_file
 from .preprocess import normalize_text
 from .scoring import score_pair
-from .semantic import tfidf_pair_similarity
+from .semantic import bert_pair_similarity, sbert_pair_similarity, tfidf_pair_similarity
 from .types import Outcome
 
 CO_ID_KEY = "CO"
@@ -19,10 +20,9 @@ PO_TEXT_KEY = "description"
 def _load_outcomes(path: Path, id_key: str, text_key: str) -> list[Outcome]:
     suffix = path.suffix.lower()
     if suffix == ".csv":
-        with path.open(newline="") as f:
-            rows: list[dict[str, str]] = list(csv.DictReader(f))
+        rows = list(csv.DictReader(StringIO(read_text_file(path))))
     elif suffix == ".json":
-        rows = json.loads(path.read_text())
+        rows = json.loads(read_text_file(path))
         if not isinstance(rows, list):
             raise ValueError(f"{path.name}: JSON input must be a list of objects.")
     else:
@@ -47,7 +47,14 @@ def _load_outcomes(path: Path, id_key: str, text_key: str) -> list[Outcome]:
     return outcomes
 
 
-def run_pairwise_mapping(co_file: str, po_file: str, out_dir: str) -> tuple[Path, Path]:
+def run_pairwise_mapping(
+    co_file: str,
+    po_file: str,
+    out_dir: str,
+    *,
+    semantic_backend: str = "tfidf",
+    semantic_model: str | None = None,
+) -> tuple[Path, Path]:
     co_items = _load_outcomes(Path(co_file), id_key=CO_ID_KEY, text_key=CO_TEXT_KEY)
     po_items = _load_outcomes(Path(po_file), id_key=PO_ID_KEY, text_key=PO_TEXT_KEY)
 
@@ -72,13 +79,31 @@ def run_pairwise_mapping(co_file: str, po_file: str, out_dir: str) -> tuple[Path
                 }
             )
 
+    semantic_backend = semantic_backend.lower().strip()
     similarities = tfidf_pair_similarity(co_norms, po_norms)
+    semantic_method = "tfidf"
+
+    if semantic_backend == "sbert":
+        model_name = semantic_model or "sentence-transformers/all-MiniLM-L6-v2"
+        sbert_similarities = sbert_pair_similarity(co_norms, po_norms, model_name=model_name)
+        if sbert_similarities is not None:
+            similarities = sbert_similarities
+            semantic_method = f"sbert:{model_name}"
+    elif semantic_backend == "bert":
+        model_name = semantic_model or "google-bert/bert-base-uncased"
+        bert_similarities = bert_pair_similarity(co_norms, po_norms, model_name=model_name)
+        if bert_similarities is not None:
+            similarities = bert_similarities
+            semantic_method = f"bert:{model_name}"
+    elif semantic_backend != "tfidf":
+        raise ValueError("semantic_backend must be one of: tfidf, sbert, bert")
 
     for i, row in enumerate(rows):
         result = score_pair(str(row["co_norm"]), str(row["po_norm"]), similarities[i])
         row["predicted_strength"] = result.score
         row["confidence"] = result.confidence
         row["explanation"] = result.explanation
+        row["semantic_method"] = semantic_method
 
     output_dir = Path(out_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -95,6 +120,7 @@ def run_pairwise_mapping(co_file: str, po_file: str, out_dir: str) -> tuple[Path
                 "po_text",
                 "predicted_strength",
                 "confidence",
+                "semantic_method",
                 "explanation",
             ],
         )
