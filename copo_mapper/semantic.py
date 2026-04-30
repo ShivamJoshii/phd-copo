@@ -23,7 +23,28 @@ def _cosine(counter_a: Counter[str], counter_b: Counter[str]) -> float:
 def tfidf_pair_similarity(co_texts: list[str], po_texts: list[str]) -> list[float]:
     if len(co_texts) != len(po_texts):
         raise ValueError("co_texts and po_texts must have the same length.")
-    return [_cosine(_tf(co), _tf(po)) for co, po in zip(co_texts, po_texts, strict=True)]
+
+    # Build IDF from the corpus of all unique texts (smooth IDF: log((N+1)/(df+1))+1)
+    corpus = list(set(co_texts) | set(po_texts))
+    N = len(corpus)
+    df: Counter[str] = Counter()
+    for doc in corpus:
+        for term in set(doc.split()):
+            df[term] += 1
+    idf = {term: math.log((N + 1) / (count + 1)) + 1 for term, count in df.items()}
+    default_idf = math.log((N + 1) / 1) + 1
+
+    def _tfidf(text: str) -> Counter[str]:
+        return Counter({t: cnt * idf.get(t, default_idf) for t, cnt in _tf(text).items()})
+
+    cache: dict[str, Counter[str]] = {}
+
+    def cached_tfidf(text: str) -> Counter[str]:
+        if text not in cache:
+            cache[text] = _tfidf(text)
+        return cache[text]
+
+    return [_cosine(cached_tfidf(co), cached_tfidf(po)) for co, po in zip(co_texts, po_texts, strict=True)]
 
 
 def sbert_pair_similarity(

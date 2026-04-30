@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import json
+import warnings
 from pathlib import Path
 
 from .io_utils import normalize_keys
@@ -89,12 +90,24 @@ def run_pairwise_mapping(
         if sbert_similarities is not None:
             similarities = sbert_similarities
             semantic_method = f"sbert:{model_name}"
+        else:
+            warnings.warn(
+                "sentence-transformers is not installed; falling back to tfidf. "
+                "Install it with: pip install sentence-transformers",
+                stacklevel=2,
+            )
     elif semantic_backend == "bert":
         model_name = semantic_model or "google-bert/bert-base-uncased"
         bert_similarities = bert_pair_similarity(co_norms, po_norms, model_name=model_name)
         if bert_similarities is not None:
             similarities = bert_similarities
             semantic_method = f"bert:{model_name}"
+        else:
+            warnings.warn(
+                "transformers or torch is not installed; falling back to tfidf. "
+                "Install them with: pip install transformers torch",
+                stacklevel=2,
+            )
     elif semantic_backend != "tfidf":
         raise ValueError("semantic_backend must be one of: tfidf, sbert, bert")
 
