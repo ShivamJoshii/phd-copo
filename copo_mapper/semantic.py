@@ -67,9 +67,12 @@ def sbert_pair_similarity(
 
     sentence_transformers = importlib.import_module("sentence_transformers")
     SentenceTransformer = sentence_transformers.SentenceTransformer
-    model = SentenceTransformer(model_name)
-    co_embeddings = model.encode(co_texts, convert_to_numpy=True, normalize_embeddings=True)
-    po_embeddings = model.encode(po_texts, convert_to_numpy=True, normalize_embeddings=True)
+    try:
+        model = SentenceTransformer(model_name)
+        co_embeddings = model.encode(co_texts, convert_to_numpy=True, normalize_embeddings=True)
+        po_embeddings = model.encode(po_texts, convert_to_numpy=True, normalize_embeddings=True)
+    except OSError:
+        return None
 
     return [float((co_embeddings[i] * po_embeddings[i]).sum()) for i in range(len(co_texts))]
 
@@ -97,8 +100,11 @@ def bert_pair_similarity(
     AutoModel = transformers.AutoModel
     AutoTokenizer = transformers.AutoTokenizer
 
-    tokenizer = AutoTokenizer.from_pretrained(model_name)
-    model = AutoModel.from_pretrained(model_name)
+    try:
+        tokenizer = AutoTokenizer.from_pretrained(model_name)
+        model = AutoModel.from_pretrained(model_name)
+    except OSError:
+        return None
     model.eval()
 
     all_texts = co_texts + po_texts
