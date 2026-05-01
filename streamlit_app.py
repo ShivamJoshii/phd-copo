@@ -155,7 +155,7 @@ def _mapping_tab() -> None:
             index=0,
             help=(
                 "Choose similarity engine for Stage 1 mapping. "
-                "If neural dependencies are missing for SBERT/BERT, mapping falls back to TF-IDF."
+                "SBERT/BERT runs require their dependencies and model load to succeed."
             ),
             key="semantic_backend",
         )
@@ -189,24 +189,32 @@ def _mapping_tab() -> None:
             st.error(str(err))
             return
 
-        with tempfile.TemporaryDirectory() as tmp:
-            tmp_path = Path(tmp)
-            co_path = tmp_path / f"co{co_suffix}"
-            po_path = tmp_path / f"po{po_suffix}"
-            out_dir = tmp_path / "out"
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                tmp_path = Path(tmp)
+                co_path = tmp_path / f"co{co_suffix}"
+                po_path = tmp_path / f"po{po_suffix}"
+                out_dir = tmp_path / "out"
 
-            co_path.write_bytes(co_upload.getvalue())
-            po_path.write_bytes(po_upload.getvalue())
-            pair_path, matrix_path = run_pairwise_mapping(
-                str(co_path),
-                str(po_path),
-                str(out_dir),
-                semantic_backend=semantic_backend,
-                semantic_model=semantic_model or None,
+                co_path.write_bytes(co_upload.getvalue())
+                po_path.write_bytes(po_upload.getvalue())
+                pair_path, matrix_path = run_pairwise_mapping(
+                    str(co_path),
+                    str(po_path),
+                    str(out_dir),
+                    semantic_backend=semantic_backend,
+                    semantic_model=semantic_model or None,
+                )
+
+                pair_rows = _read_csv_rows(pair_path)
+                matrix_header, matrix_rows = _read_matrix(matrix_path)
+        except RuntimeError as err:
+            st.error(f"Mapping failed for backend '{semantic_backend}': {err}")
+            st.info(
+                "Install required dependencies (`pip install -e '.[nlp]'`) and retry. "
+                "No fallback is used."
             )
-
-            pair_rows = _read_csv_rows(pair_path)
-            matrix_header, matrix_rows = _read_matrix(matrix_path)
+            return
 
         st.session_state["pair_rows"] = pair_rows
         st.session_state["matrix_header"] = matrix_header
@@ -219,6 +227,7 @@ def _mapping_tab() -> None:
     pair_rows: list[dict[str, str]] = st.session_state["pair_rows"]
     matrix_header: list[str] = st.session_state["matrix_header"]
     matrix_rows: list[list[str]] = st.session_state["matrix_rows"]
+
 
     st.markdown(_matrix_html(matrix_header, matrix_rows), unsafe_allow_html=True)
     st.caption("Color scale: 0=red, 1=yellow, 2=blue, 3=green")
@@ -354,7 +363,7 @@ def _attainment_tab() -> None:
         st.session_state[table_key],
         key=f"co_editor_v{st.session_state.get(version_key, 0)}",
         num_rows="fixed",
-        use_container_width=True,
+        width="stretch",
         column_config={
             "co_id": st.column_config.TextColumn("CO", disabled=True),
             "MA": st.column_config.NumberColumn(
@@ -448,13 +457,13 @@ def _attainment_tab() -> None:
         return
 
     st.markdown("### CO Attainment Summary")
-    st.dataframe(st.session_state["co_summary"], use_container_width=True)
+    st.dataframe(st.session_state["co_summary"], width="stretch")
 
     st.markdown("### PO Attainment Summary")
-    st.dataframe(st.session_state["po_summary"], use_container_width=True)
+    st.dataframe(st.session_state["po_summary"], width="stretch")
 
     st.markdown("### Target Achievement")
-    st.dataframe(st.session_state["target_summary"], use_container_width=True)
+    st.dataframe(st.session_state["target_summary"], width="stretch")
 
     st.markdown("### Course Summary")
     st.json(st.session_state["course_summary"])
