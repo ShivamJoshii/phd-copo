@@ -15,7 +15,7 @@ from copo_mapper.attainment import (
     load_mapping_matrix,
     run_attainment_analysis_from_objects,
 )
-from copo_mapper.io_utils import normalize_keys
+from copo_mapper.io_utils import decode_text_bytes, normalize_keys
 from copo_mapper.pipeline import (
     CO_ID_KEY,
     CO_TEXT_KEY,
@@ -46,7 +46,7 @@ def _upload_suffix(uploaded_file) -> str:
 
 def _load_outcome_upload(uploaded_file, id_key: str, text_key: str) -> list[dict[str, str]]:
     suffix = _upload_suffix(uploaded_file)
-    raw = uploaded_file.getvalue().decode("utf-8")
+    raw = decode_text_bytes(uploaded_file.getvalue(), source=uploaded_file.name or "upload")
     if suffix == ".csv":
         rows: list[dict[str, str]] = list(csv.DictReader(StringIO(raw)))
     else:
@@ -297,7 +297,7 @@ def _attainment_tab() -> None:
         )
 
     if matrix_upload is not None:
-        matrix_csv = matrix_upload.getvalue().decode("utf-8")
+        matrix_csv = decode_text_bytes(matrix_upload.getvalue(), source=matrix_upload.name or "matrix upload")
     else:
         matrix_csv = st.session_state.get("matrix_csv")
 

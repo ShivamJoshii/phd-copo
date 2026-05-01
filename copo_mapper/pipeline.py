@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import csv
 import json
+from io import StringIO
 from pathlib import Path
 
-from .io_utils import normalize_keys
+from .io_utils import normalize_keys, read_text_file
 from .preprocess import normalize_text
 from .scoring import score_pair
 from .semantic import bert_pair_similarity, sbert_pair_similarity, tfidf_pair_similarity
@@ -19,10 +20,9 @@ PO_TEXT_KEY = "description"
 def _load_outcomes(path: Path, id_key: str, text_key: str) -> list[Outcome]:
     suffix = path.suffix.lower()
     if suffix == ".csv":
-        with path.open(newline="") as f:
-            rows: list[dict[str, str]] = list(csv.DictReader(f))
+        rows = list(csv.DictReader(StringIO(read_text_file(path))))
     elif suffix == ".json":
-        rows = json.loads(path.read_text())
+        rows = json.loads(read_text_file(path))
         if not isinstance(rows, list):
             raise ValueError(f"{path.name}: JSON input must be a list of objects.")
     else:

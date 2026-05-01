@@ -205,6 +205,7 @@ So attainment is **not a separate app** in the browser workflow anymore.
 Stage 1 sidebar also includes:
 - **Semantic Backend** selector (`tfidf`, `sbert`, `bert`)
 - **Semantic Model** optional override input (uses backend default when left empty)
+- Upload parser supports common text encodings (`UTF-8`, `UTF-8 BOM`, `CP1252`, `Latin-1`) for CSV/JSON files
 
 Recommended flow:
 1. In **Stage 1**, upload `CO` and `PO` files (JSON or CSV).
