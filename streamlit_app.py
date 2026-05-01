@@ -355,7 +355,7 @@ def _attainment_tab() -> None:
         st.session_state[table_key],
         key=f"co_editor_v{st.session_state.get(version_key, 0)}",
         num_rows="fixed",
-        use_container_width=True,
+        width="stretch",
         column_config={
             "co_id": st.column_config.TextColumn("CO", disabled=True),
             "MA": st.column_config.NumberColumn(
@@ -449,13 +449,13 @@ def _attainment_tab() -> None:
         return
 
     st.markdown("### CO Attainment Summary")
-    st.dataframe(st.session_state["co_summary"], use_container_width=True)
+    st.dataframe(st.session_state["co_summary"], width="stretch")
 
     st.markdown("### PO Attainment Summary")
-    st.dataframe(st.session_state["po_summary"], use_container_width=True)
+    st.dataframe(st.session_state["po_summary"], width="stretch")
 
     st.markdown("### Target Achievement")
-    st.dataframe(st.session_state["target_summary"], use_container_width=True)
+    st.dataframe(st.session_state["target_summary"], width="stretch")
 
     st.markdown("### Course Summary")
     st.json(st.session_state["course_summary"])
