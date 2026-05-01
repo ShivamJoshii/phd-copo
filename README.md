@@ -90,6 +90,12 @@ Expected outputs:
 - `outputs_large/matrix.csv` with full 4x5 mapping grid
 
 
+
+### Streamlit deployment (auto-install dependencies)
+
+If you deploy on Streamlit Cloud, include a `requirements.txt` in repo root.
+This repo now includes one with `streamlit`, `sentence-transformers`, `transformers`, and `torch`, so the deploy environment installs BERT/SBERT dependencies automatically.
+
 ## Input format
 
 All Stage 1 and Stage 2 input files accept **either JSON or CSV**. The parser is selected by file extension (`.json` or `.csv`).
