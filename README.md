@@ -11,7 +11,7 @@ Given a list of Course Outcomes (COs) and Program Outcomes (POs), the system:
 3. Computes semantic similarity (TF-IDF cosine).
 4. Predicts mapping strength on a 4-point scale (`0,1,2,3`).
 5. Exports pairwise predictions and a matrix view.
-6. Supports optional SBERT or BERT semantic similarity (with automatic TF-IDF fallback if unavailable).
+6. Supports optional SBERT or BERT semantic similarity (strict backend execution for fair comparison).
 
 ## Project status
 
@@ -66,7 +66,7 @@ copo-map \
   --semantic-model google-bert/bert-base-uncased
 ```
 
-If selected neural dependencies are unavailable, the pipeline falls back to TF-IDF-style cosine automatically.
+If selected neural dependencies are unavailable, the pipeline raises an error for SBERT/BERT so method comparisons remain valid.
 
 Outputs:
 

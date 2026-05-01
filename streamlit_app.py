@@ -155,7 +155,7 @@ def _mapping_tab() -> None:
             index=0,
             help=(
                 "Choose similarity engine for Stage 1 mapping. "
-                "If neural dependencies are missing for SBERT/BERT, mapping falls back to TF-IDF."
+                "SBERT/BERT runs require their dependencies and model load to succeed."
             ),
             key="semantic_backend",
         )
@@ -219,6 +219,7 @@ def _mapping_tab() -> None:
     pair_rows: list[dict[str, str]] = st.session_state["pair_rows"]
     matrix_header: list[str] = st.session_state["matrix_header"]
     matrix_rows: list[list[str]] = st.session_state["matrix_rows"]
+
 
     st.markdown(_matrix_html(matrix_header, matrix_rows), unsafe_allow_html=True)
     st.caption("Color scale: 0=red, 1=yellow, 2=blue, 3=green")
