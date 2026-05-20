@@ -46,7 +46,10 @@ class POAttainmentResult:
 
 
 def compute_direct_attainment(ma: float, ea: float, config: WeightConfig) -> float:
-    return (ma * config.ma_weight) + (ea * config.ea_weight)
+    total = config.ma_weight + config.ea_weight
+    if total == 0:
+        return 0.0
+    return ((ma * config.ma_weight) + (ea * config.ea_weight)) / total
 
 
 def compute_final_attainment(direct: float, indirect: float, config: WeightConfig) -> float:
