@@ -289,11 +289,13 @@ This stage consumes:
 
 ### Formulas
 
-- `DirectCO = (MA * ma_weight) + (EA * ea_weight)`
+- `DirectCO = ((MA * ma_weight) + (EA * ea_weight)) / (ma_weight + ea_weight)`
 - `FinalCO = (DirectCO * direct_weight) + (Indirect * indirect_weight)`
 - `COScaled = FinalCO * 3`
 - `PO = sum(FinalCO_i * Map_ij) / sum(Map_ij)`
 - `POScaled = PO * 3`
+
+The `DirectCO` formula divides by the sum of internal + external weights so the result stays on the same scale as the inputs regardless of how the institution splits the two (e.g. 30/50 or 40/60). Existing configs whose `ma_weight + ea_weight = 1.0` behave identically to before.
 
 ### Run Stage 2 CLI
 
@@ -310,3 +312,82 @@ Outputs:
 - `attainment_outputs/po_attainment_summary.csv`
 - `attainment_outputs/target_achievement.csv`
 - `attainment_outputs/course_summary.json`
+
+
+## Stage 3: Semester-level PO Attainment
+
+Rolls per-course PO values into a semester score, credit-weighted across the courses in that semester.
+
+### Formula
+
+```
+PO_sem = sum(PO_course * credits) / sum(credits)
+```
+
+### Input
+
+A single CSV/JSON, one row per course:
+
+```csv
+course_id,credits,PO1,PO2,PO3
+DBMS,4,2.63,2.63,2.72
+OS,3,2.50,2.40,2.60
+```
+
+Missing cells are skipped (treated as "course doesn't contribute to that PO"), not as zero.
+
+### Run
+
+```bash
+python -m copo_mapper.semester_cli \
+  --courses-file examples/courses_semester1.csv \
+  --out-dir semester_outputs
+```
+
+Output: `semester_outputs/semester_po_attainment.csv` with columns `level, po_id, value, percentage, scaled`.
+
+
+## Stage 4: Program-level PO Attainment
+
+Rolls semester PO values into a program score, credit-weighted across semesters.
+
+### Formula
+
+```
+PO_program = sum(PO_sem * credits) / sum(credits)
+```
+
+### Input
+
+```csv
+semester_id,credits,PO1
+Sem1,20,2.50
+Sem2,22,2.58
+```
+
+### Run
+
+```bash
+python -m copo_mapper.program_cli \
+  --semesters-file examples/semesters_program.csv \
+  --out-dir program_outputs
+```
+
+Output: `program_outputs/program_po_attainment.csv`.
+
+
+## End-to-end flow
+
+The whole pipeline forms a funnel:
+
+```
+Internal + External    →  Direct
+Direct + Indirect      →  Final CO
+CO + Mapping           →  Course PO     (Stage 2)
+Course PO + Credits    →  Semester PO   (Stage 3)
+Semester PO + Credits  →  Program PO    (Stage 4)
+```
+
+Every stage is a weighted average — only the weights change (internal/external split, then direct/indirect, then mapping strength, then credits, then credits again).
+
+In the Streamlit app the four stages appear as Steps 1 → 4. Each step's outputs are pushed forward into the next via session state, so you can walk the full flow without re-uploading.

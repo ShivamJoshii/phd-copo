@@ -8,6 +8,12 @@ from pathlib import Path
 
 import streamlit as st
 
+from copo_mapper.aggregate import (
+    CreditRow,
+    compute_program_po,
+    compute_semester_po,
+    load_credit_rows,
+)
 from copo_mapper.attainment import (
     COAttainmentInput,
     WeightConfig,
@@ -491,16 +497,286 @@ def _attainment_tab() -> None:
             mime="text/csv",
         )
 
+    st.markdown("### Push this course forward to Step 3 (Semester)")
+    st.caption(
+        "Enter a course id and credits, then add to the semester roll-up. "
+        "Course PO values flow through on the 0–3 scale."
+    )
+    p1, p2, p3 = st.columns([2, 1, 1])
+    with p1:
+        course_id_input = st.text_input("Course ID", value="Course1", key="stage2_course_id")
+    with p2:
+        credits_input = st.number_input(
+            "Credits", min_value=0.0, value=3.0, step=0.5, key="stage2_course_credits"
+        )
+    with p3:
+        st.write("")
+        if st.button("Add course to Step 3"):
+            po_row = {
+                row["po_id"]: float(row["weighted_attainment"])
+                for row in st.session_state["po_summary"]
+            }
+            new_row: dict = {
+                "course_id": course_id_input.strip() or "Course",
+                "credits": float(credits_input),
+                **po_row,
+            }
+            existing = [
+                r for r in st.session_state.get("semester_courses", [])
+                if r.get("course_id") != new_row["course_id"]
+            ]
+            existing.append(new_row)
+            st.session_state["semester_courses"] = existing
+            st.session_state["semester_courses_version"] = (
+                st.session_state.get("semester_courses_version", 0) + 1
+            )
+            st.success(f"Added '{new_row['course_id']}' (credits {new_row['credits']}) to Step 3.")
+
+
+def _rows_to_credit_rows(rows: list[dict]) -> list[CreditRow]:
+    credit_rows: list[CreditRow] = []
+    for row in rows:
+        po_values: dict[str, float] = {}
+        id_value = ""
+        credits_value = 0.0
+        for key, value in row.items():
+            if key is None:
+                continue
+            lower = str(key).strip().lower()
+            if lower in {"course_id", "semester_id", "id"}:
+                id_value = str(value).strip()
+            elif lower in {"credits", "credit"}:
+                if value not in (None, ""):
+                    credits_value = float(value)
+            else:
+                if value in (None, ""):
+                    continue
+                try:
+                    po_values[str(key).strip()] = float(value)
+                except (TypeError, ValueError):
+                    continue
+        if not id_value:
+            continue
+        credit_rows.append(CreditRow(id=id_value, credits=credits_value, po_values=po_values))
+    return credit_rows
+
+
+def _aggregate_results_to_rows(values: dict[str, float], level: str) -> list[dict]:
+    return [
+        {
+            "level": level,
+            "po_id": po_id,
+            "value": round(value, 4),
+            "percentage_on_3_scale": round(value * 100 / 3, 2),
+        }
+        for po_id, value in values.items()
+    ]
+
+
+def _semester_tab() -> None:
+    st.subheader("Step 3 — Semester PO Attainment")
+    st.write(
+        "Roll up course-level PO values into a semester score, credit-weighted. "
+        "Courses pushed forward from Step 2 appear here automatically; you can also "
+        "edit rows or upload a `course_id, credits, PO1, PO2, ...` CSV."
+    )
+
+    with st.sidebar:
+        st.header("Step 3 Inputs")
+        courses_upload = st.file_uploader(
+            "Optional: Upload courses CSV / JSON",
+            type=TABULAR_UPLOAD_TYPES,
+            key="courses_upload",
+            help="Columns: course_id, credits, PO1, PO2, ...",
+        )
+
+    if courses_upload is not None and st.session_state.get("_courses_fid") != courses_upload.file_id:
+        try:
+            suffix = _upload_suffix(courses_upload)
+            with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tf:
+                tf.write(courses_upload.getvalue())
+                tmp_name = tf.name
+            try:
+                rows = load_credit_rows(tmp_name)
+            finally:
+                Path(tmp_name).unlink(missing_ok=True)
+        except (ValueError, KeyError) as err:
+            st.error(f"Upload failed: {err}")
+        else:
+            st.session_state["semester_courses"] = [
+                {"course_id": r.id, "credits": r.credits, **r.po_values} for r in rows
+            ]
+            st.session_state["_courses_fid"] = courses_upload.file_id
+            st.session_state["semester_courses_version"] = (
+                st.session_state.get("semester_courses_version", 0) + 1
+            )
+
+    courses = st.session_state.get("semester_courses", [])
+    if not courses:
+        st.info(
+            "No courses yet. Run Step 2 and click 'Add course to Step 3', "
+            "or upload a courses CSV in the sidebar."
+        )
+        return
+
+    st.markdown("### Courses in this semester")
+    edited = st.data_editor(
+        courses,
+        key=f"semester_editor_v{st.session_state.get('semester_courses_version', 0)}",
+        num_rows="dynamic",
+        width="stretch",
+    )
+    st.session_state["semester_courses"] = edited
+
+    if st.button("Run Semester Aggregation", type="primary"):
+        credit_rows = _rows_to_credit_rows(edited)
+        if not credit_rows:
+            st.error("Need at least one course row with an id and credits.")
+            return
+        po_values = compute_semester_po(credit_rows)
+        st.session_state["semester_po_values"] = po_values
+        st.session_state["semester_summary_rows"] = _aggregate_results_to_rows(po_values, "semester")
+
+    if "semester_summary_rows" not in st.session_state:
+        return
+
+    st.markdown("### Semester PO Attainment")
+    st.dataframe(st.session_state["semester_summary_rows"], width="stretch")
+    st.download_button(
+        "Export Semester PO CSV",
+        data=_csv_from_rows(st.session_state["semester_summary_rows"]),
+        file_name="semester_po_attainment.csv",
+        mime="text/csv",
+    )
+
+    st.markdown("### Push this semester forward to Step 4 (Program)")
+    p1, p2, p3 = st.columns([2, 1, 1])
+    with p1:
+        sem_id = st.text_input("Semester ID", value="Sem1", key="stage3_semester_id")
+    with p2:
+        sem_credits = st.number_input(
+            "Semester credits", min_value=0.0, value=20.0, step=1.0, key="stage3_semester_credits"
+        )
+    with p3:
+        st.write("")
+        if st.button("Add semester to Step 4"):
+            new_row: dict = {
+                "semester_id": sem_id.strip() or "Sem",
+                "credits": float(sem_credits),
+                **{k: round(v, 4) for k, v in st.session_state["semester_po_values"].items()},
+            }
+            existing = [
+                r for r in st.session_state.get("program_semesters", [])
+                if r.get("semester_id") != new_row["semester_id"]
+            ]
+            existing.append(new_row)
+            st.session_state["program_semesters"] = existing
+            st.session_state["program_semesters_version"] = (
+                st.session_state.get("program_semesters_version", 0) + 1
+            )
+            st.success(f"Added '{new_row['semester_id']}' to Step 4.")
+
+
+def _program_tab() -> None:
+    st.subheader("Step 4 — Program / Degree PO Attainment")
+    st.write(
+        "Aggregate semester-level PO values across the program, credit-weighted. "
+        "Semesters pushed forward from Step 3 appear here automatically; or upload a "
+        "`semester_id, credits, PO1, PO2, ...` CSV."
+    )
+
+    with st.sidebar:
+        st.header("Step 4 Inputs")
+        semesters_upload = st.file_uploader(
+            "Optional: Upload semesters CSV / JSON",
+            type=TABULAR_UPLOAD_TYPES,
+            key="semesters_upload",
+            help="Columns: semester_id, credits, PO1, PO2, ...",
+        )
+
+    if semesters_upload is not None and st.session_state.get("_semesters_fid") != semesters_upload.file_id:
+        try:
+            suffix = _upload_suffix(semesters_upload)
+            with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tf:
+                tf.write(semesters_upload.getvalue())
+                tmp_name = tf.name
+            try:
+                rows = load_credit_rows(tmp_name)
+            finally:
+                Path(tmp_name).unlink(missing_ok=True)
+        except (ValueError, KeyError) as err:
+            st.error(f"Upload failed: {err}")
+        else:
+            st.session_state["program_semesters"] = [
+                {"semester_id": r.id, "credits": r.credits, **r.po_values} for r in rows
+            ]
+            st.session_state["_semesters_fid"] = semesters_upload.file_id
+            st.session_state["program_semesters_version"] = (
+                st.session_state.get("program_semesters_version", 0) + 1
+            )
+
+    semesters = st.session_state.get("program_semesters", [])
+    if not semesters:
+        st.info(
+            "No semesters yet. Run Step 3 and click 'Add semester to Step 4', "
+            "or upload a semesters CSV in the sidebar."
+        )
+        return
+
+    st.markdown("### Semesters in this program")
+    edited = st.data_editor(
+        semesters,
+        key=f"program_editor_v{st.session_state.get('program_semesters_version', 0)}",
+        num_rows="dynamic",
+        width="stretch",
+    )
+    st.session_state["program_semesters"] = edited
+
+    if st.button("Run Program Aggregation", type="primary"):
+        credit_rows = _rows_to_credit_rows(edited)
+        if not credit_rows:
+            st.error("Need at least one semester row with an id and credits.")
+            return
+        po_values = compute_program_po(credit_rows)
+        st.session_state["program_summary_rows"] = _aggregate_results_to_rows(po_values, "program")
+
+    if "program_summary_rows" not in st.session_state:
+        return
+
+    st.markdown("### Program PO Attainment")
+    st.dataframe(st.session_state["program_summary_rows"], width="stretch")
+    st.download_button(
+        "Export Program PO CSV",
+        data=_csv_from_rows(st.session_state["program_summary_rows"]),
+        file_name="program_po_attainment.csv",
+        mime="text/csv",
+    )
+
 
 def main() -> None:
     st.set_page_config(page_title="CO-PO Mapper + Attainment UI", layout="wide")
     st.title("CO-PO Mapping & Attainment Workbench")
+    st.caption(
+        "Walk left → right: Mapping → Course attainment → Semester roll-up → Program roll-up. "
+        "Each step pushes its outputs into the next."
+    )
 
-    tab_map, tab_att = st.tabs(["Stage 1: Mapping", "Stage 2: Attainment"])
+    tab_map, tab_att, tab_sem, tab_prog = st.tabs(
+        [
+            "Step 1: Mapping",
+            "Step 2: Course Attainment",
+            "Step 3: Semester",
+            "Step 4: Program",
+        ]
+    )
     with tab_map:
         _mapping_tab()
     with tab_att:
         _attainment_tab()
+    with tab_sem:
+        _semester_tab()
+    with tab_prog:
+        _program_tab()
 
 
 if __name__ == "__main__":
