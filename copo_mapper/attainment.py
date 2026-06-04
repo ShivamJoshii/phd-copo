@@ -115,10 +115,10 @@ def compute_po_attainment(
 def _read_tabular(path: Path) -> list[dict[str, str]]:
     suffix = path.suffix.lower()
     if suffix == ".csv":
-        with path.open(newline="") as f:
+        with path.open(newline="", encoding="utf-8-sig") as f:
             return list(csv.DictReader(f))
     if suffix == ".json":
-        data = json.loads(path.read_text())
+        data = json.loads(path.read_text(encoding="utf-8-sig"))
         if not isinstance(data, list):
             raise ValueError(f"{path.name}: JSON input must be a list of objects.")
         return data
@@ -129,13 +129,13 @@ def load_weight_config(path: str) -> WeightConfig:
     p = Path(path)
     suffix = p.suffix.lower()
     if suffix == ".csv":
-        with p.open(newline="") as f:
+        with p.open(newline="", encoding="utf-8-sig") as f:
             rows = list(csv.DictReader(f))
         if len(rows) != 1:
             raise ValueError(f"{p.name}: config CSV must contain exactly one data row.")
         data = normalize_keys(rows[0])
     elif suffix == ".json":
-        data = normalize_keys(json.loads(p.read_text()))
+        data = normalize_keys(json.loads(p.read_text(encoding="utf-8-sig")))
     else:
         raise ValueError(f"{p.name}: unsupported extension '{suffix}'. Use .json or .csv.")
 
@@ -166,7 +166,7 @@ def load_co_attainment_input(path: str) -> list[COAttainmentInput]:
 
 def load_mapping_matrix(path: str) -> dict[str, dict[str, int]]:
     p = Path(path)
-    with p.open() as f:
+    with p.open(encoding="utf-8-sig") as f:
         rows = list(csv.DictReader(f))
 
     mapping: dict[str, dict[str, int]] = {}

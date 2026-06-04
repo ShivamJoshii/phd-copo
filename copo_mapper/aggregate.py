@@ -73,13 +73,13 @@ def _detect_columns(headers: list[str]) -> tuple[str, str, list[str]]:
 def _read_tabular(path: Path) -> tuple[list[str], list[dict[str, str]]]:
     suffix = path.suffix.lower()
     if suffix == ".csv":
-        with path.open(newline="") as f:
+        with path.open(newline="", encoding="utf-8-sig") as f:
             reader = csv.DictReader(f)
             headers = list(reader.fieldnames or [])
             rows = list(reader)
         return headers, rows
     if suffix == ".json":
-        data = json.loads(path.read_text())
+        data = json.loads(path.read_text(encoding="utf-8-sig"))
         if not isinstance(data, list) or not data:
             raise ValueError(f"{path.name}: JSON input must be a non-empty list of objects.")
         headers = list(data[0].keys())

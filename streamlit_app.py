@@ -52,7 +52,7 @@ def _upload_suffix(uploaded_file) -> str:
 
 def _load_outcome_upload(uploaded_file, id_key: str, text_key: str) -> list[dict[str, str]]:
     suffix = _upload_suffix(uploaded_file)
-    raw = uploaded_file.getvalue().decode("utf-8")
+    raw = uploaded_file.getvalue().decode("utf-8-sig")
     if suffix == ".csv":
         rows: list[dict[str, str]] = list(csv.DictReader(StringIO(raw)))
     else:
@@ -73,12 +73,12 @@ def _load_outcome_upload(uploaded_file, id_key: str, text_key: str) -> list[dict
 
 
 def _read_csv_rows(path: Path) -> list[dict[str, str]]:
-    with path.open() as f:
+    with path.open(encoding="utf-8-sig") as f:
         return list(csv.DictReader(f))
 
 
 def _read_matrix(path: Path) -> tuple[list[str], list[list[str]]]:
-    with path.open() as f:
+    with path.open(encoding="utf-8-sig") as f:
         reader = list(csv.reader(f))
     return reader[0], reader[1:]
 
@@ -303,7 +303,7 @@ def _attainment_tab() -> None:
         )
 
     if matrix_upload is not None:
-        matrix_csv = matrix_upload.getvalue().decode("utf-8")
+        matrix_csv = matrix_upload.getvalue().decode("utf-8-sig")
     else:
         matrix_csv = st.session_state.get("matrix_csv")
 

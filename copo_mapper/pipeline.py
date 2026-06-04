@@ -19,10 +19,10 @@ PO_TEXT_KEY = "description"
 def _load_outcomes(path: Path, id_key: str, text_key: str) -> list[Outcome]:
     suffix = path.suffix.lower()
     if suffix == ".csv":
-        with path.open(newline="") as f:
+        with path.open(newline="", encoding="utf-8-sig") as f:
             rows: list[dict[str, str]] = list(csv.DictReader(f))
     elif suffix == ".json":
-        rows = json.loads(path.read_text())
+        rows = json.loads(path.read_text(encoding="utf-8-sig"))
         if not isinstance(rows, list):
             raise ValueError(f"{path.name}: JSON input must be a list of objects.")
     else:
