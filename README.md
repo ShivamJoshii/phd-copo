@@ -376,6 +376,33 @@ python -m copo_mapper.program_cli \
 Output: `program_outputs/program_po_attainment.csv`.
 
 
+## Root-cause diagnosis & systemic drivers (why a target was missed)
+
+Because every attainment number is a deterministic weighted average, the reason a
+CO or PO missed its target is *exactly computable* — no model guessing required.
+
+### Per-course diagnosis (`copo_mapper/diagnostics.py`)
+
+After running Stage 2, the Streamlit app shows a **"Why did targets miss?"** panel:
+
+- **Missed CO** → the weakest input (MA / EA / Indirect) and the exact value a
+  single input would need to reach the target (cheapest fix first).
+- **Missed PO** → each contributing CO's *weight share* and *drag* (low CO
+  attainment × high mapping strength = the real culprit), plus the cheapest
+  single CO lever to cross target.
+
+Every lever is verified by construction: applying the suggested value reaches the
+target in the same arithmetic the pipeline uses (see `tests/test_diagnostics.py`).
+
+### Systemic drivers (`copo_mapper/ml_drivers.py`)
+
+The interpretable, small-data ML layer. As you analyse multiple courses in the
+app, it accumulates CO observations and ranks which input most *systematically*
+tracks with missed targets across courses (point-biserial correlation + mean
+gap between met/missed groups). It is dependency-free and honest about small
+samples; an optional `fit_logistic` upgrade path uses scikit-learn when present
+and more data is available. This is the seam for a future trained model.
+
 ## End-to-end flow
 
 The whole pipeline forms a funnel:

@@ -17,9 +17,17 @@ from copo_mapper.aggregate import (
 from copo_mapper.attainment import (
     COAttainmentInput,
     WeightConfig,
+    compute_co_attainment,
+    compute_po_attainment,
     load_co_attainment_input,
     load_mapping_matrix,
     run_attainment_analysis_from_objects,
+)
+from copo_mapper.diagnostics import diagnose_course
+from copo_mapper.ml_drivers import (
+    observation_from_co,
+    rank_drivers,
+    summarize_drivers,
 )
 from copo_mapper.io_utils import normalize_keys
 from copo_mapper.pipeline import (
@@ -278,6 +286,100 @@ def _mapping_tab() -> None:
         )
 
 
+def _render_diagnosis(diagnosis) -> None:
+    """Render the deterministic root-cause analysis for missed CO/PO targets."""
+    st.markdown("### Why did targets miss? (root-cause diagnosis)")
+    missed_cos = diagnosis.missed_cos
+    missed_pos = diagnosis.missed_pos
+
+    if not missed_cos and not missed_pos:
+        st.success("All COs and POs met their target levels — nothing to diagnose.")
+        return
+
+    st.caption(
+        "Deterministic decomposition of each miss: the weakest input / the CO that "
+        "drags the PO down most, plus the cheapest single change that reaches target."
+    )
+
+    if missed_pos:
+        st.markdown("**Missed POs**")
+        for exp in missed_pos:
+            with st.expander(f"❌ {exp.po_id} — gap {exp.gap:.2f} (scaled {exp.scaled:.2f} / target {exp.target:.2f})"):
+                st.write(exp.reason)
+                st.dataframe(
+                    [
+                        {
+                            "CO": c.co_id,
+                            "mapping": c.map_strength,
+                            "weight %": round(c.weight_share * 100, 1),
+                            "CO final": c.co_final,
+                            "drag (scaled)": c.drag_scaled,
+                        }
+                        for c in exp.contributions
+                    ],
+                    width="stretch",
+                )
+                if exp.levers:
+                    st.caption(
+                        "Cheapest fixes (raise a CO's final attainment to this value): "
+                        + ", ".join(f"{lv.name}→{lv.needed:.2f}" for lv in exp.levers[:3])
+                    )
+
+    if missed_cos:
+        st.markdown("**Missed COs**")
+        for exp in missed_cos:
+            with st.expander(f"❌ {exp.co_id} — gap {exp.gap:.2f} (scaled {exp.scaled:.2f} / target {exp.target:.2f})"):
+                st.write(exp.reason)
+                st.dataframe(
+                    [{"component": k, "value": v} for k, v in exp.components.items()],
+                    width="stretch",
+                )
+                if exp.levers:
+                    st.caption(
+                        "Single-input fixes: "
+                        + ", ".join(f"{lv.name} {lv.current:.2f}→{lv.needed:.2f}" for lv in exp.levers)
+                    )
+
+
+def _render_systemic_drivers() -> None:
+    """Cross-course driver analysis built up from each course you run."""
+    store = st.session_state.get("co_observations_by_course", {})
+    all_obs = [o for rows in store.values() for o in rows]
+    n_courses = len(store)
+
+    st.markdown("### Systemic drivers across analysed courses (experimental)")
+    st.caption(
+        "Builds a dataset from every course you run here, then ranks which input "
+        "(internal MA, external EA, indirect) most tracks with missed CO targets. "
+        "This is the interpretable, small-data ML layer — directional, not a verdict."
+    )
+
+    if n_courses < 2 or len(all_obs) < 6:
+        st.info(
+            f"Analysed {n_courses} course(s), {len(all_obs)} CO rows so far. "
+            "Run at least 2 courses (≥6 CO rows) to unlock driver analysis. "
+            "Tip: set distinct Course IDs below before each run so they don't overwrite."
+        )
+        return
+
+    scores = rank_drivers(all_obs)
+    for line in summarize_drivers(scores, len(all_obs)):
+        st.write(f"- {line}")
+    st.dataframe(
+        [
+            {
+                "feature": s.feature,
+                "corr. with miss": s.correlation,
+                "mean (met)": s.mean_when_met,
+                "mean (missed)": s.mean_when_missed,
+                "direction": s.direction,
+            }
+            for s in scores
+        ],
+        width="stretch",
+    )
+
+
 def _attainment_tab() -> None:
     st.subheader("Stage 2 — Attainment Analysis")
     st.write(
@@ -454,10 +556,26 @@ def _attainment_tab() -> None:
             target_summary = _read_csv_rows(paths["target_achievement"])
             course_summary = json.loads(paths["course_summary"].read_text())
 
+        # Deterministic root-cause diagnosis for any missed target.
+        co_results = compute_co_attainment(co_inputs, config)
+        po_results = compute_po_attainment(co_results, mapping, config)
+        diagnosis = diagnose_course(co_results, po_results, mapping, config)
+
+        # Accumulate CO observations across analysed courses for systemic
+        # (cross-course) driver analysis. Keyed by course id so re-running a
+        # course replaces its earlier rows instead of double-counting.
+        course_label = str(st.session_state.get("stage2_course_id") or "course").strip() or "course"
+        store = dict(st.session_state.get("co_observations_by_course", {}))
+        store[course_label] = [
+            observation_from_co(r, config, course_id=course_label) for r in co_results
+        ]
+        st.session_state["co_observations_by_course"] = store
+
         st.session_state["co_summary"] = co_summary
         st.session_state["po_summary"] = po_summary
         st.session_state["target_summary"] = target_summary
         st.session_state["course_summary"] = course_summary
+        st.session_state["diagnosis"] = diagnosis
 
     if "co_summary" not in st.session_state:
         return
@@ -473,6 +591,11 @@ def _attainment_tab() -> None:
 
     st.markdown("### Course Summary")
     st.json(st.session_state["course_summary"])
+
+    if "diagnosis" in st.session_state:
+        _render_diagnosis(st.session_state["diagnosis"])
+
+    _render_systemic_drivers()
 
     d1, d2, d3 = st.columns(3)
     with d1:
