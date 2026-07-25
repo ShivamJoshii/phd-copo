@@ -1,9 +1,9 @@
-from __future__ import annotations
-
 import csv
 import json
 from dataclasses import dataclass
 from pathlib import Path
+
+from .io_utils import normalize_keys
 
 
 @dataclass(frozen=True)
@@ -40,12 +40,16 @@ class COAttainmentResult:
 class POAttainmentResult:
     po_id: str
     weighted_attainment: float
+    percentage: float
     scaled_attainment: float
     target_achieved: str
 
 
 def compute_direct_attainment(ma: float, ea: float, config: WeightConfig) -> float:
-    return (ma * config.ma_weight) + (ea * config.ea_weight)
+    total = config.ma_weight + config.ea_weight
+    if total == 0:
+        return 0.0
+    return ((ma * config.ma_weight) + (ea * config.ea_weight)) / total
 
 
 def compute_final_attainment(direct: float, indirect: float, config: WeightConfig) -> float:
@@ -99,6 +103,7 @@ def compute_po_attainment(
             POAttainmentResult(
                 po_id=po_id,
                 weighted_attainment=round(weighted, 4),
+                percentage=round(weighted * 100, 2),
                 scaled_attainment=round(scaled, 2),
                 target_achieved="Y" if scaled >= config.po_target_level else "N",
             )
@@ -107,8 +112,33 @@ def compute_po_attainment(
     return results
 
 
+def _read_tabular(path: Path) -> list[dict[str, str]]:
+    suffix = path.suffix.lower()
+    if suffix == ".csv":
+        with path.open(newline="", encoding="utf-8-sig") as f:
+            return list(csv.DictReader(f))
+    if suffix == ".json":
+        data = json.loads(path.read_text(encoding="utf-8-sig"))
+        if not isinstance(data, list):
+            raise ValueError(f"{path.name}: JSON input must be a list of objects.")
+        return data
+    raise ValueError(f"{path.name}: unsupported extension '{suffix}'. Use .json or .csv.")
+
+
 def load_weight_config(path: str) -> WeightConfig:
-    data = json.loads(Path(path).read_text())
+    p = Path(path)
+    suffix = p.suffix.lower()
+    if suffix == ".csv":
+        with p.open(newline="", encoding="utf-8-sig") as f:
+            rows = list(csv.DictReader(f))
+        if len(rows) != 1:
+            raise ValueError(f"{p.name}: config CSV must contain exactly one data row.")
+        data = normalize_keys(rows[0])
+    elif suffix == ".json":
+        data = normalize_keys(json.loads(p.read_text(encoding="utf-8-sig")))
+    else:
+        raise ValueError(f"{p.name}: unsupported extension '{suffix}'. Use .json or .csv.")
+
     return WeightConfig(
         ma_weight=float(data["ma_weight"]),
         ea_weight=float(data["ea_weight"]),
@@ -120,27 +150,39 @@ def load_weight_config(path: str) -> WeightConfig:
 
 
 def load_co_attainment_input(path: str) -> list[COAttainmentInput]:
-    data = json.loads(Path(path).read_text())
-    return [
-        COAttainmentInput(
-            co_id=row["co_id"],
-            ma_attainment=float(row["ma_attainment"]),
-            ea_attainment=float(row["ea_attainment"]),
-            indirect_attainment=float(row["indirect_attainment"]),
+    results: list[COAttainmentInput] = []
+    for row in _read_tabular(Path(path)):
+        r = normalize_keys(row)
+        results.append(
+            COAttainmentInput(
+                co_id=str(r["co_id"]).strip(),
+                ma_attainment=float(r["ma_attainment"]),
+                ea_attainment=float(r["ea_attainment"]),
+                indirect_attainment=float(r["indirect_attainment"]),
+            )
         )
-        for row in data
-    ]
+    return results
 
 
 def load_mapping_matrix(path: str) -> dict[str, dict[str, int]]:
-    with Path(path).open() as f:
-        reader = csv.DictReader(f)
-        rows = list(reader)
+    p = Path(path)
+    with p.open(encoding="utf-8-sig") as f:
+        rows = list(csv.DictReader(f))
 
     mapping: dict[str, dict[str, int]] = {}
     for row in rows:
-        co_id = row["co_id"]
-        mapping[co_id] = {k: int(v) for k, v in row.items() if k != "co_id" and v != ""}
+        co_id_value: str | None = None
+        po_cells: dict[str, int] = {}
+        for k, v in row.items():
+            if k is None:
+                continue
+            if k.strip().lower() == "co_id":
+                co_id_value = v
+            elif v not in ("", None):
+                po_cells[k] = int(v)
+        if co_id_value is None:
+            raise ValueError(f"{p.name}: matrix CSV must include a 'co_id' column.")
+        mapping[str(co_id_value).strip()] = po_cells
     return mapping
 
 
@@ -170,18 +212,12 @@ def summarize_course(
     }
 
 
-def run_attainment_analysis(
-    co_attainment_file: str,
-    mapping_matrix_file: str,
-    config_file: str,
+def _write_attainment_outputs(
+    co_results: list[COAttainmentResult],
+    po_results: list[POAttainmentResult],
+    config: WeightConfig,
     out_dir: str,
 ) -> dict[str, Path]:
-    config = load_weight_config(config_file)
-    co_inputs = load_co_attainment_input(co_attainment_file)
-    mapping = load_mapping_matrix(mapping_matrix_file)
-
-    co_results = compute_co_attainment(co_inputs, config)
-    po_results = compute_po_attainment(co_results, mapping, config)
     course_summary = summarize_course(co_results, po_results)
 
     output_dir = Path(out_dir)
@@ -234,3 +270,26 @@ def run_attainment_analysis(
         "target_achievement": target_path,
         "course_summary": summary_path,
     }
+
+
+def run_attainment_analysis_from_objects(
+    co_inputs: list[COAttainmentInput],
+    mapping: dict[str, dict[str, int]],
+    config: WeightConfig,
+    out_dir: str,
+) -> dict[str, Path]:
+    co_results = compute_co_attainment(co_inputs, config)
+    po_results = compute_po_attainment(co_results, mapping, config)
+    return _write_attainment_outputs(co_results, po_results, config, out_dir)
+
+
+def run_attainment_analysis(
+    co_attainment_file: str,
+    mapping_matrix_file: str,
+    config_file: str,
+    out_dir: str,
+) -> dict[str, Path]:
+    config = load_weight_config(config_file)
+    co_inputs = load_co_attainment_input(co_attainment_file)
+    mapping = load_mapping_matrix(mapping_matrix_file)
+    return run_attainment_analysis_from_objects(co_inputs, mapping, config, out_dir)

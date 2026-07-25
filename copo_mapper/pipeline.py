@@ -4,83 +4,59 @@ import csv
 import json
 from pathlib import Path
 
+from .io_utils import normalize_keys
 from .preprocess import normalize_text
 from .scoring import score_pair
-from .semantic import DEFAULT_SBERT_MODEL, sbert_pair_similarity, tfidf_pair_similarity
+from .semantic import bert_pair_similarity, sbert_pair_similarity, tfidf_pair_similarity
 from .types import Outcome
 
-
-def _pick_value(row: dict[str, str], candidates: list[str]) -> str | None:
-    lowered = {key.lower(): value for key, value in row.items()}
-    for candidate in candidates:
-        value = lowered.get(candidate.lower())
-        if value is not None:
-            return value
-    return None
+CO_ID_KEY = "CO"
+CO_TEXT_KEY = "description"
+PO_ID_KEY = "PO"
+PO_TEXT_KEY = "description"
 
 
-def _load_outcomes(path: Path) -> list[Outcome]:
+def _load_outcomes(path: Path, id_key: str, text_key: str) -> list[Outcome]:
     suffix = path.suffix.lower()
-    if suffix == ".json":
-        data = json.loads(path.read_text())
-        return [Outcome(id=item["id"], text=item["text"]) for item in data]
     if suffix == ".csv":
-        with path.open() as f:
-            rows = list(csv.DictReader(f))
-        outcomes: list[Outcome] = []
-        for row in rows:
-            outcome_id = _pick_value(row, ["id", "co", "po"])
-            outcome_text = _pick_value(row, ["text", "description"])
-            if outcome_id is None or outcome_text is None:
-                raise ValueError(
-                    "CSV must include an ID column (id/CO/PO) and a text column (text/Description)."
-                )
-            outcomes.append(Outcome(id=outcome_id.strip(), text=outcome_text.strip()))
-        return outcomes
-    raise ValueError(f"Unsupported file format for {path}. Use .json or .csv.")
+        with path.open(newline="", encoding="utf-8-sig") as f:
+            rows: list[dict[str, str]] = list(csv.DictReader(f))
+    elif suffix == ".json":
+        rows = json.loads(path.read_text(encoding="utf-8-sig"))
+        if not isinstance(rows, list):
+            raise ValueError(f"{path.name}: JSON input must be a list of objects.")
+    else:
+        raise ValueError(f"{path.name}: unsupported extension '{suffix}'. Use .json or .csv.")
 
-
-def _compute_semantic_similarities(
-    co_norms: list[str],
-    po_norms: list[str],
-    semantic_mode: str,
-    sbert_model: str,
-) -> tuple[list[float], str]:
-    tfidf_similarities = tfidf_pair_similarity(co_norms, po_norms)
-
-    if semantic_mode == "tfidf":
-        return tfidf_similarities, "tfidf"
-
-    sbert_similarities = sbert_pair_similarity(co_norms, po_norms, model_name=sbert_model)
-    if semantic_mode == "sbert":
-        if sbert_similarities is None:
+    id_target = id_key.strip().lower()
+    text_target = text_key.strip().lower()
+    outcomes: list[Outcome] = []
+    for item in rows:
+        normalized = normalize_keys(item)
+        if id_target not in normalized or text_target not in normalized:
             raise ValueError(
-                "SBERT mode requested, but SentenceBERT is unavailable. Install with: pip install -e .[sbert]"
+                f"{path.name}: each row must include columns '{id_key}' and '{text_key}' "
+                "(case-insensitive)."
             )
-        return sbert_similarities, "sbert"
-
-    if sbert_similarities is None:
-        return tfidf_similarities, "tfidf"
-
-    blended = [
-        (0.4 * tfidf) + (0.6 * sbert)
-        for tfidf, sbert in zip(tfidf_similarities, sbert_similarities, strict=True)
-    ]
-    return blended, "blended"
+        outcomes.append(
+            Outcome(
+                id=str(normalized[id_target]).strip(),
+                text=str(normalized[text_target]).strip(),
+            )
+        )
+    return outcomes
 
 
 def run_pairwise_mapping(
     co_file: str,
     po_file: str,
     out_dir: str,
-    semantic_mode: str = "auto",
-    sbert_model: str = DEFAULT_SBERT_MODEL,
+    *,
+    semantic_backend: str = "tfidf",
+    semantic_model: str | None = None,
 ) -> tuple[Path, Path]:
-    if semantic_mode not in {"auto", "tfidf", "sbert"}:
-        raise ValueError("semantic_mode must be one of: auto, tfidf, sbert.")
-
-    co_items = _load_outcomes(Path(co_file))
-    po_items = _load_outcomes(Path(po_file))
+    co_items = _load_outcomes(Path(co_file), id_key=CO_ID_KEY, text_key=CO_TEXT_KEY)
+    po_items = _load_outcomes(Path(po_file), id_key=PO_ID_KEY, text_key=PO_TEXT_KEY)
 
     rows: list[dict[str, str | int | float]] = []
     co_norms: list[str] = []
@@ -103,20 +79,40 @@ def run_pairwise_mapping(
                 }
             )
 
-    similarities, semantic_source = _compute_semantic_similarities(
-        co_norms,
-        po_norms,
-        semantic_mode=semantic_mode,
-        sbert_model=sbert_model,
-    )
+    semantic_backend = semantic_backend.lower().strip()
+    similarities = tfidf_pair_similarity(co_norms, po_norms)
+    semantic_method = "tfidf"
+
+    if semantic_backend == "sbert":
+        model_name = semantic_model or "sentence-transformers/all-MiniLM-L6-v2"
+        sbert_similarities = sbert_pair_similarity(co_norms, po_norms, model_name=model_name)
+        if sbert_similarities is None:
+            raise RuntimeError(
+                "Unable to run requested backend 'sbert': sentence-transformers is not installed "
+                "or model could not be loaded. Install it with: pip install sentence-transformers"
+            )
+        similarities = sbert_similarities
+        semantic_method = f"sbert:{model_name}"
+    elif semantic_backend == "bert":
+        model_name = semantic_model or "google-bert/bert-base-uncased"
+        bert_similarities = bert_pair_similarity(co_norms, po_norms, model_name=model_name)
+        if bert_similarities is None:
+            raise RuntimeError(
+                "Unable to run requested backend 'bert': transformers/torch are not installed "
+                "or model could not be loaded. Install with: pip install transformers torch"
+            )
+        similarities = bert_similarities
+        semantic_method = f"bert:{model_name}"
+    elif semantic_backend != "tfidf":
+        raise ValueError("semantic_backend must be one of: tfidf, sbert, bert")
 
     for i, row in enumerate(rows):
         result = score_pair(str(row["co_norm"]), str(row["po_norm"]), similarities[i])
-        row["semantic_similarity"] = round(similarities[i], 4)
-        row["semantic_source"] = semantic_source
         row["predicted_strength"] = result.score
         row["confidence"] = result.confidence
         row["explanation"] = result.explanation
+        row["semantic_method"] = semantic_method
+        row["requested_backend"] = semantic_backend
 
     output_dir = Path(out_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -131,10 +127,10 @@ def run_pairwise_mapping(
                 "co_text",
                 "po_id",
                 "po_text",
-                "semantic_similarity",
-                "semantic_source",
                 "predicted_strength",
                 "confidence",
+                "semantic_method",
+                "requested_backend",
                 "explanation",
             ],
         )

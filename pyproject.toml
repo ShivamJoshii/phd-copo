@@ -13,11 +13,13 @@ dependencies = []
 
 [project.optional-dependencies]
 ui = ["streamlit>=1.30"]
-sbert = ["sentence-transformers>=3.0"]
+nlp = ["sentence-transformers>=2.6", "transformers>=4.40", "torch>=2.1"]
 
 [project.scripts]
 copo-map = "copo_mapper.cli:main"
 copo-attainment = "copo_mapper.attainment_cli:main"
+copo-semester = "copo_mapper.semester_cli:main"
+copo-program = "copo_mapper.program_cli:main"
 
 [tool.setuptools.packages.find]
 include = ["copo_mapper*"]

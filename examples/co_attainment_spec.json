@@ -1,0 +1,5 @@
+[
+  {"co_id": "CO1", "ma_attainment": 2.5, "ea_attainment": 2.8, "indirect_attainment": 2.7},
+  {"co_id": "CO2", "ma_attainment": 2.2, "ea_attainment": 2.6, "indirect_attainment": 2.5},
+  {"co_id": "CO3", "ma_attainment": 2.8, "ea_attainment": 2.9, "indirect_attainment": 2.6}
+]
