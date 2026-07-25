@@ -11,7 +11,7 @@ Given a list of Course Outcomes (COs) and Program Outcomes (POs), the system:
 3. Computes semantic similarity (TF-IDF cosine).
 4. Predicts mapping strength on a 4-point scale (`0,1,2,3`).
 5. Exports pairwise predictions and a matrix view.
-6. Supports optional SBERT or BERT semantic similarity (with automatic TF-IDF fallback if unavailable).
+6. Supports optional SBERT or BERT semantic similarity (strict backend execution for fair comparison).
 
 ## Project status
 
@@ -66,7 +66,7 @@ copo-map \
   --semantic-model google-bert/bert-base-uncased
 ```
 
-If selected neural dependencies are unavailable, the pipeline falls back to TF-IDF-style cosine automatically.
+If selected neural dependencies are unavailable, the pipeline raises an error for SBERT/BERT so method comparisons remain valid.
 
 Outputs:
 
@@ -89,6 +89,12 @@ Expected outputs:
 - `outputs_large/pair_predictions.csv` with `20` rows (4×5)
 - `outputs_large/matrix.csv` with full 4x5 mapping grid
 
+
+
+### Streamlit deployment (auto-install dependencies)
+
+If you deploy on Streamlit Cloud, include a `requirements.txt` in repo root.
+This repo now includes one with `streamlit`, `sentence-transformers`, `transformers`, and `torch`, so the deploy environment installs BERT/SBERT dependencies automatically.
 
 ## Input format
 
@@ -284,11 +290,13 @@ This stage consumes:
 
 ### Formulas
 
-- `DirectCO = (MA * ma_weight) + (EA * ea_weight)`
+- `DirectCO = ((MA * ma_weight) + (EA * ea_weight)) / (ma_weight + ea_weight)`
 - `FinalCO = (DirectCO * direct_weight) + (Indirect * indirect_weight)`
 - `COScaled = FinalCO * 3`
 - `PO = sum(FinalCO_i * Map_ij) / sum(Map_ij)`
 - `POScaled = PO * 3`
+
+The `DirectCO` formula divides by the sum of internal + external weights so the result stays on the same scale as the inputs regardless of how the institution splits the two (e.g. 30/50 or 40/60). Existing configs whose `ma_weight + ea_weight = 1.0` behave identically to before.
 
 ### Run Stage 2 CLI
 
@@ -305,3 +313,109 @@ Outputs:
 - `attainment_outputs/po_attainment_summary.csv`
 - `attainment_outputs/target_achievement.csv`
 - `attainment_outputs/course_summary.json`
+
+
+## Stage 3: Semester-level PO Attainment
+
+Rolls per-course PO values into a semester score, credit-weighted across the courses in that semester.
+
+### Formula
+
+```
+PO_sem = sum(PO_course * credits) / sum(credits)
+```
+
+### Input
+
+A single CSV/JSON, one row per course:
+
+```csv
+course_id,credits,PO1,PO2,PO3
+DBMS,4,2.63,2.63,2.72
+OS,3,2.50,2.40,2.60
+```
+
+Missing cells are skipped (treated as "course doesn't contribute to that PO"), not as zero.
+
+### Run
+
+```bash
+python -m copo_mapper.semester_cli \
+  --courses-file examples/courses_semester1.csv \
+  --out-dir semester_outputs
+```
+
+Output: `semester_outputs/semester_po_attainment.csv` with columns `level, po_id, value, percentage, scaled`.
+
+
+## Stage 4: Program-level PO Attainment
+
+Rolls semester PO values into a program score, credit-weighted across semesters.
+
+### Formula
+
+```
+PO_program = sum(PO_sem * credits) / sum(credits)
+```
+
+### Input
+
+```csv
+semester_id,credits,PO1
+Sem1,20,2.50
+Sem2,22,2.58
+```
+
+### Run
+
+```bash
+python -m copo_mapper.program_cli \
+  --semesters-file examples/semesters_program.csv \
+  --out-dir program_outputs
+```
+
+Output: `program_outputs/program_po_attainment.csv`.
+
+
+## Root-cause diagnosis & systemic drivers (why a target was missed)
+
+Because every attainment number is a deterministic weighted average, the reason a
+CO or PO missed its target is *exactly computable* — no model guessing required.
+
+### Per-course diagnosis (`copo_mapper/diagnostics.py`)
+
+After running Stage 2, the Streamlit app shows a **"Why did targets miss?"** panel:
+
+- **Missed CO** → the weakest input (MA / EA / Indirect) and the exact value a
+  single input would need to reach the target (cheapest fix first).
+- **Missed PO** → each contributing CO's *weight share* and *drag* (low CO
+  attainment × high mapping strength = the real culprit), plus the cheapest
+  single CO lever to cross target.
+
+Every lever is verified by construction: applying the suggested value reaches the
+target in the same arithmetic the pipeline uses (see `tests/test_diagnostics.py`).
+
+### Systemic drivers (`copo_mapper/ml_drivers.py`)
+
+The interpretable, small-data ML layer. As you analyse multiple courses in the
+app, it accumulates CO observations and ranks which input most *systematically*
+tracks with missed targets across courses (point-biserial correlation + mean
+gap between met/missed groups). It is dependency-free and honest about small
+samples; an optional `fit_logistic` upgrade path uses scikit-learn when present
+and more data is available. This is the seam for a future trained model.
+
+## End-to-end flow
+
+The whole pipeline forms a funnel:
+
+```
+Internal + External    →  Direct
+Direct + Indirect      →  Final CO
+CO + Mapping           →  Course PO     (Stage 2)
+Course PO + Credits    →  Semester PO   (Stage 3)
+Semester PO + Credits  →  Program PO    (Stage 4)
+```
+
+Every stage is a weighted average — only the weights change (internal/external split, then direct/indirect, then mapping strength, then credits, then credits again).
+
+In the Streamlit app the four stages appear as Steps 1 → 4. Each step's outputs are pushed forward into the next via session state, so you can walk the full flow without re-uploading.

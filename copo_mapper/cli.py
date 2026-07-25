@@ -14,7 +14,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--semantic-backend",
         choices=["tfidf", "sbert", "bert"],
         default="tfidf",
-        help="Semantic model backend to use (falls back to TF-IDF if unavailable).",
+        help="Semantic model backend to use. SBERT/BERT must be available when selected.",
     )
     parser.add_argument(
         "--semantic-model",

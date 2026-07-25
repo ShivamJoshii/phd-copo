@@ -23,7 +23,28 @@ def _cosine(counter_a: Counter[str], counter_b: Counter[str]) -> float:
 def tfidf_pair_similarity(co_texts: list[str], po_texts: list[str]) -> list[float]:
     if len(co_texts) != len(po_texts):
         raise ValueError("co_texts and po_texts must have the same length.")
-    return [_cosine(_tf(co), _tf(po)) for co, po in zip(co_texts, po_texts, strict=True)]
+
+    # Build IDF from the corpus of all unique texts (smooth IDF: log((N+1)/(df+1))+1)
+    corpus = list(set(co_texts) | set(po_texts))
+    N = len(corpus)
+    df: Counter[str] = Counter()
+    for doc in corpus:
+        for term in set(doc.split()):
+            df[term] += 1
+    idf = {term: math.log((N + 1) / (count + 1)) + 1 for term, count in df.items()}
+    default_idf = math.log((N + 1) / 1) + 1
+
+    def _tfidf(text: str) -> Counter[str]:
+        return Counter({t: cnt * idf.get(t, default_idf) for t, cnt in _tf(text).items()})
+
+    cache: dict[str, Counter[str]] = {}
+
+    def cached_tfidf(text: str) -> Counter[str]:
+        if text not in cache:
+            cache[text] = _tfidf(text)
+        return cache[text]
+
+    return [_cosine(cached_tfidf(co), cached_tfidf(po)) for co, po in zip(co_texts, po_texts, strict=True)]
 
 
 def sbert_pair_similarity(
@@ -46,9 +67,12 @@ def sbert_pair_similarity(
 
     sentence_transformers = importlib.import_module("sentence_transformers")
     SentenceTransformer = sentence_transformers.SentenceTransformer
-    model = SentenceTransformer(model_name)
-    co_embeddings = model.encode(co_texts, convert_to_numpy=True, normalize_embeddings=True)
-    po_embeddings = model.encode(po_texts, convert_to_numpy=True, normalize_embeddings=True)
+    try:
+        model = SentenceTransformer(model_name)
+        co_embeddings = model.encode(co_texts, convert_to_numpy=True, normalize_embeddings=True)
+        po_embeddings = model.encode(po_texts, convert_to_numpy=True, normalize_embeddings=True)
+    except OSError:
+        return None
 
     return [float((co_embeddings[i] * po_embeddings[i]).sum()) for i in range(len(co_texts))]
 
@@ -76,8 +100,11 @@ def bert_pair_similarity(
     AutoModel = transformers.AutoModel
     AutoTokenizer = transformers.AutoTokenizer
 
-    tokenizer = AutoTokenizer.from_pretrained(model_name)
-    model = AutoModel.from_pretrained(model_name)
+    try:
+        tokenizer = AutoTokenizer.from_pretrained(model_name)
+        model = AutoModel.from_pretrained(model_name)
+    except OSError:
+        return None
     model.eval()
 
     all_texts = co_texts + po_texts
