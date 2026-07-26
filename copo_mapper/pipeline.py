@@ -107,7 +107,9 @@ def run_pairwise_mapping(
         raise ValueError("semantic_backend must be one of: tfidf, sbert, bert")
 
     for i, row in enumerate(rows):
-        result = score_pair(str(row["co_norm"]), str(row["po_norm"]), similarities[i])
+        result = score_pair(
+            str(row["co_norm"]), str(row["po_norm"]), similarities[i], backend=semantic_backend
+        )
         row["predicted_strength"] = result.score
         row["confidence"] = result.confidence
         row["explanation"] = result.explanation

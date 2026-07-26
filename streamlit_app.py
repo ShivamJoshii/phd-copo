@@ -37,8 +37,22 @@ from copo_mapper.pipeline import (
     PO_TEXT_KEY,
     run_pairwise_mapping,
 )
+from copo_mapper.ui_helpers import (
+    DEFAULT_PO_KINDS,
+    available_po_kinds,
+    canonical_co_csv_text,
+    canonical_po_csv_text,
+    course_from_option,
+    course_options,
+    parse_raw_co_bytes,
+    parse_raw_po_bytes,
+)
+from copo_mapper.ingest import to_canonical_co_rows, to_canonical_po_rows
 
 OUTCOME_UPLOAD_TYPES = ["json", "csv"]
+FORMAT_RAW = "Raw faculty export"
+CO_FORMAT_OPTIONS = [f"Canonical ({CO_ID_KEY},{CO_TEXT_KEY})", FORMAT_RAW]
+PO_FORMAT_OPTIONS = [f"Canonical ({PO_ID_KEY},{PO_TEXT_KEY})", FORMAT_RAW]
 TABULAR_UPLOAD_TYPES = ["json", "csv"]
 
 COLOR_BY_STRENGTH = {
@@ -147,19 +161,122 @@ def _csv_from_matrix(header: list[str], rows: list[list[str]]) -> str:
     return buffer.getvalue()
 
 
+def _raw_co_rows_ui(co_upload) -> list[dict[str, str]] | None:
+    """Parse a raw CO export upload, let the user pick a course, and preview.
+
+    Returns canonical ``CO,description`` rows, or None when parsing/conversion
+    failed (an st.error has already been shown).
+    """
+    st.markdown("### Raw CO export → canonical rows")
+    try:
+        records = parse_raw_co_bytes(co_upload.getvalue())
+    except ValueError as err:
+        st.error(f"Could not parse raw CO export '{co_upload.name}': {err}")
+        return None
+
+    selected_option = st.selectbox(
+        "Course to map",
+        options=course_options(records),
+        key="raw_co_course",
+        help=(
+            "Pick a single course to map its COs with plain ids (CO1, CO2, ...), "
+            "or keep all courses with course-prefixed ids (KMBN101-CO1, ...)."
+        ),
+    )
+    try:
+        rows = to_canonical_co_rows(records, course=course_from_option(selected_option))
+    except ValueError as err:
+        st.error(f"Could not convert CO export: {err}")
+        return None
+
+    st.caption(f"{len(rows)} CO row(s) ready for mapping.")
+    st.dataframe(rows, width="stretch")
+    st.download_button(
+        "Download canonical CO CSV",
+        data=canonical_co_csv_text(rows),
+        file_name="co_canonical.csv",
+        mime="text/csv",
+    )
+    return rows
+
+
+def _raw_po_rows_ui(po_upload) -> list[dict[str, str]] | None:
+    """Parse a raw PO export upload, let the user pick kinds, and preview.
+
+    Returns canonical ``PO,description`` rows, or None when parsing/conversion
+    failed (an st.error has already been shown).
+    """
+    st.markdown("### Raw PO export → canonical rows")
+    try:
+        records = parse_raw_po_bytes(po_upload.getvalue())
+    except ValueError as err:
+        st.error(f"Could not parse raw PO export '{po_upload.name}': {err}")
+        return None
+
+    kinds = available_po_kinds(records)
+    selected_kinds = st.multiselect(
+        "Outcome kinds to include",
+        options=kinds,
+        default=[k for k in kinds if k in DEFAULT_PO_KINDS],
+        key="raw_po_kinds",
+        help="PEO statements are program educational objectives; excluded by default.",
+    )
+    if not selected_kinds:
+        st.error("Select at least one outcome kind (PO / PSO / PEO) to include.")
+        return None
+    rows = to_canonical_po_rows(records, include=selected_kinds)
+
+    st.caption(f"{len(rows)} PO row(s) ready for mapping.")
+    st.dataframe(rows, width="stretch")
+    st.download_button(
+        "Download canonical PO CSV",
+        data=canonical_po_csv_text(rows),
+        file_name="po_canonical.csv",
+        mime="text/csv",
+    )
+    return rows
+
+
 def _mapping_tab() -> None:
     st.subheader("Stage 1 — CO-PO Mapping")
-    st.write("Upload CO/PO JSON, generate pairwise mapping, and inspect matrix + pair details.")
+    st.write(
+        "Upload CO/PO files (canonical, or raw faculty exports converted in-app), "
+        "generate pairwise mapping, and inspect matrix + pair details."
+    )
 
     with st.sidebar:
         st.header("Stage 1 Inputs")
+        co_format = st.radio(
+            "CO file format",
+            options=CO_FORMAT_OPTIONS,
+            key="co_format",
+            help=(
+                "Canonical: a clean file with CO id and description columns. "
+                "Raw faculty export: a single-column institutional dump with course "
+                "header rows and lines like 'CO1: ...'."
+            ),
+        )
         co_upload = st.file_uploader(
-            f"Upload CO file (columns: {CO_ID_KEY}, {CO_TEXT_KEY})",
+            f"Upload CO file (columns: {CO_ID_KEY}, {CO_TEXT_KEY})"
+            if co_format != FORMAT_RAW
+            else "Upload raw CO export (CSV)",
             type=OUTCOME_UPLOAD_TYPES,
             key="co_upload",
         )
+        po_format = st.radio(
+            "PO file format",
+            options=PO_FORMAT_OPTIONS,
+            key="po_format",
+            help=(
+                "Canonical: a clean file with PO id and description columns. "
+                "Raw faculty export: an institutional dump with 'PEO1:', 'PO1:', "
+                "'PSO1:' statement lines."
+            ),
+        )
         po_upload = st.file_uploader(
-            f"Upload PO file (columns: {PO_ID_KEY}, {PO_TEXT_KEY})",
+            f"Upload PO file (columns: {PO_ID_KEY}, {PO_TEXT_KEY})"
+            if po_format != FORMAT_RAW
+            else "Upload raw PO/PSO/PEO export (CSV)",
             type=OUTCOME_UPLOAD_TYPES,
             key="po_upload",
         )
@@ -193,12 +310,33 @@ def _mapping_tab() -> None:
         st.info("Please upload both CO and PO files (JSON or CSV) to run mapping.")
         return
 
+    co_raw_rows: list[dict[str, str]] | None = None
+    po_raw_rows: list[dict[str, str]] | None = None
+    if co_format == FORMAT_RAW:
+        co_raw_rows = _raw_co_rows_ui(co_upload)
+        if co_raw_rows is None:
+            return
+    if po_format == FORMAT_RAW:
+        po_raw_rows = _raw_po_rows_ui(po_upload)
+        if po_raw_rows is None:
+            return
+
     if st.button("Run Mapping", type="primary"):
         try:
-            _load_outcome_upload(co_upload, CO_ID_KEY, CO_TEXT_KEY)
-            _load_outcome_upload(po_upload, PO_ID_KEY, PO_TEXT_KEY)
-            co_suffix = _upload_suffix(co_upload)
-            po_suffix = _upload_suffix(po_upload)
+            if co_raw_rows is not None:
+                co_bytes = canonical_co_csv_text(co_raw_rows).encode("utf-8")
+                co_suffix = ".csv"
+            else:
+                _load_outcome_upload(co_upload, CO_ID_KEY, CO_TEXT_KEY)
+                co_bytes = co_upload.getvalue()
+                co_suffix = _upload_suffix(co_upload)
+            if po_raw_rows is not None:
+                po_bytes = canonical_po_csv_text(po_raw_rows).encode("utf-8")
+                po_suffix = ".csv"
+            else:
+                _load_outcome_upload(po_upload, PO_ID_KEY, PO_TEXT_KEY)
+                po_bytes = po_upload.getvalue()
+                po_suffix = _upload_suffix(po_upload)
         except ValueError as err:
             st.error(str(err))
             return
@@ -210,8 +348,8 @@ def _mapping_tab() -> None:
                 po_path = tmp_path / f"po{po_suffix}"
                 out_dir = tmp_path / "out"
 
-                co_path.write_bytes(co_upload.getvalue())
-                po_path.write_bytes(po_upload.getvalue())
+                co_path.write_bytes(co_bytes)
+                po_path.write_bytes(po_bytes)
                 pair_path, matrix_path = run_pairwise_mapping(
                     str(co_path),
                     str(po_path),
