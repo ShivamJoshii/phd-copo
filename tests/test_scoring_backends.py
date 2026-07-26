@@ -5,24 +5,69 @@ from pathlib import Path
 from unittest import mock
 
 from copo_mapper.pipeline import run_pairwise_mapping
-from copo_mapper.scoring import SIMILARITY_FLOOR_FOR_3, THRESHOLDS, score_pair
+from copo_mapper.scoring import (
+    SIMILARITY_FLOOR_FOR_3,
+    SIMILARITY_RESCALE,
+    THRESHOLDS,
+    rescale_similarity,
+    score_pair,
+)
 
-# Feature-controlled fixture pairs (composite = 0.45*sim + feature part):
+# Feature-controlled fixture pairs (composite = 0.45*rescaled_sim + feature part):
 #
 # NO_OVERLAP: disjoint tokens, no domain terms, no bloom verbs (both sides
 #   default to "understand", gap 0 -> bloom term 0.2).
-#   composite = 0.45*sim + 0.2
+#   composite = 0.45*rescaled + 0.2
 NO_OVERLAP = ("alpha", "beta")
 #
 # BLOOM_FAR: "define" (remember) vs "design" (create), gap 5 -> bloom term 0;
 #   disjoint tokens, no domain terms.
-#   composite = 0.45*sim
+#   composite = 0.45*rescaled
 BLOOM_FAR = ("define terms", "design artifacts")
 #
 # FULL_OVERLAP: identical texts -> token jaccard 1 (0.15), domain jaccard 1
 #   (0.2: databases + algorithms), same bloom level (0.2).
-#   composite = 0.45*sim + 0.55
+#   composite = 0.45*rescaled + 0.55
 FULL_OVERLAP = ("implement database optimization", "implement database optimization")
+
+
+class RescaleFunctionTest(unittest.TestCase):
+    def test_anchor_dict_values(self) -> None:
+        self.assertEqual(SIMILARITY_RESCALE["tfidf"], (0.0, 1.0))
+        self.assertEqual(SIMILARITY_RESCALE["sbert"], (0.25, 0.75))
+        self.assertEqual(SIMILARITY_RESCALE["bert"], (0.55, 0.90))
+
+    def test_tfidf_is_identity(self) -> None:
+        for sim in (0.0, 0.1, 0.35, 0.667, 1.0):
+            self.assertEqual(rescale_similarity(sim, "tfidf"), sim)
+
+    def test_sbert_anchor_endpoints(self) -> None:
+        self.assertAlmostEqual(rescale_similarity(0.25, "sbert"), 0.0)
+        self.assertAlmostEqual(rescale_similarity(0.75, "sbert"), 1.0)
+        self.assertAlmostEqual(rescale_similarity(0.50, "sbert"), 0.5)
+        self.assertAlmostEqual(rescale_similarity(0.65, "sbert"), 0.8)
+
+    def test_sbert_clamping(self) -> None:
+        self.assertEqual(rescale_similarity(0.10, "sbert"), 0.0)
+        self.assertEqual(rescale_similarity(-0.2, "sbert"), 0.0)
+        self.assertEqual(rescale_similarity(0.90, "sbert"), 1.0)
+
+    def test_bert_anchor_endpoints(self) -> None:
+        self.assertAlmostEqual(rescale_similarity(0.55, "bert"), 0.0)
+        self.assertAlmostEqual(rescale_similarity(0.90, "bert"), 1.0)
+        self.assertAlmostEqual(rescale_similarity(0.725, "bert"), 0.5)
+
+    def test_bert_clamping(self) -> None:
+        self.assertEqual(rescale_similarity(0.30, "bert"), 0.0)
+        self.assertEqual(rescale_similarity(0.99, "bert"), 1.0)
+
+
+class SharedThresholdTest(unittest.TestCase):
+    def test_all_backends_share_the_validated_cutoffs(self) -> None:
+        # Similarity is normalized per backend BEFORE the composite, so every
+        # backend uses the single threshold set validated on real data.
+        for backend in ("tfidf", "sbert", "bert"):
+            self.assertEqual(THRESHOLDS[backend], (0.50, 0.30, 0.10))
 
 
 class TfidfBackwardCompatTest(unittest.TestCase):
@@ -62,71 +107,136 @@ class TfidfBackwardCompatTest(unittest.TestCase):
         self.assertEqual(result.score, 3)
         self.assertNotIn("capped", result.explanation)
 
-
-class SbertThresholdTest(unittest.TestCase):
-    def test_same_composite_yields_lower_label_than_tfidf(self) -> None:
+    def test_tfidf_explanation_format_unchanged(self) -> None:
+        # The identity backend keeps the legacy explanation format: no
+        # "(raw ...)" suffix, byte-identical to pre-refactor output.
         co, po = NO_OVERLAP
-        # Unrelated MiniLM pair (sim 0.2 -> composite 0.29): tfidf says 1,
-        # sbert says 0.
-        self.assertEqual(score_pair(co, po, 0.2, backend="tfidf").score, 1)
-        self.assertEqual(score_pair(co, po, 0.2, backend="sbert").score, 0)
-        # Weak MiniLM pair (sim 0.5 -> composite 0.425): tfidf says 2,
-        # sbert says 1.
-        self.assertEqual(score_pair(co, po, 0.5, backend="tfidf").score, 2)
-        self.assertEqual(score_pair(co, po, 0.5, backend="sbert").score, 1)
-        # Strong-ish sim without feature support (sim 0.68 -> composite
-        # 0.506): tfidf says 3, sbert says 2.
-        self.assertEqual(score_pair(co, po, 0.68, backend="tfidf").score, 3)
-        self.assertEqual(score_pair(co, po, 0.68, backend="sbert").score, 2)
-
-    def test_strong_pair_with_feature_overlap_scores_3(self) -> None:
-        co, po = FULL_OVERLAP  # composite = 0.45*0.68 + 0.55 = 0.856
-        self.assertEqual(score_pair(co, po, 0.68, backend="sbert").score, 3)
-
-    def test_sbert_boundaries(self) -> None:
-        co, po = NO_OVERLAP  # composite = 0.45*sim + 0.2
-        self.assertEqual(score_pair(co, po, 0.934, backend="sbert").score, 3)  # 0.6203
-        self.assertEqual(score_pair(co, po, 0.933, backend="sbert").score, 2)  # 0.61985
-        self.assertEqual(score_pair(co, po, 0.667, backend="sbert").score, 2)  # 0.50015
-        self.assertEqual(score_pair(co, po, 0.666, backend="sbert").score, 1)  # 0.49970
-        self.assertEqual(score_pair(co, po, 0.289, backend="sbert").score, 1)  # 0.33005
-        self.assertEqual(score_pair(co, po, 0.288, backend="sbert").score, 0)  # 0.32960
+        result = score_pair(co, po, 0.3, backend="tfidf")
+        self.assertIn("semantic=0.30;", result.explanation)
+        self.assertNotIn("raw", result.explanation)
 
 
-class BertThresholdTest(unittest.TestCase):
-    def test_bert_labels(self) -> None:
-        co, po = NO_OVERLAP  # composite = 0.45*sim + 0.2
-        # Mean-pooled BERT cosines run high: 0.55 is typical for unrelated
-        # texts. tfidf cutoffs would call this 2; bert cutoffs call it 0.
-        self.assertEqual(score_pair(co, po, 0.55, backend="tfidf").score, 2)
-        self.assertEqual(score_pair(co, po, 0.55, backend="bert").score, 0)  # 0.4475
-        self.assertEqual(score_pair(co, po, 0.75, backend="bert").score, 1)  # 0.5375
-        self.assertEqual(score_pair(co, po, 0.95, backend="bert").score, 2)  # 0.6275
-        co_full, po_full = FULL_OVERLAP  # composite = 0.45*0.85 + 0.55 = 0.9325
-        self.assertEqual(score_pair(co_full, po_full, 0.85, backend="bert").score, 3)
+class SbertBandTest(unittest.TestCase):
+    """Raw MiniLM sims per band, through the rescale + shared thresholds."""
+
+    def test_unrelated_raw_sim_stays_at_0_or_low_1(self) -> None:
+        # Raw 0.20 is below the unrelated floor -> rescaled 0.0: the
+        # composite is features-only.
+        co, po = NO_OVERLAP  # bloom-default worst case: composite 0.20
+        result = score_pair(co, po, 0.20, backend="sbert")
+        self.assertEqual(result.score, 1)  # 0.20 < t2=0.30: never label 2
+        co_far, po_far = BLOOM_FAR  # composite 0.0
+        self.assertEqual(score_pair(co_far, po_far, 0.20, backend="sbert").score, 0)
+
+    def test_bloom_default_does_not_push_unrelated_to_2(self) -> None:
+        # Both texts verb-less -> both default to "understand" -> bloom term
+        # 0.20 exactly. Raw 0.25 (the anchor floor) must not reach label 2.
+        co, po = NO_OVERLAP
+        result = score_pair(co, po, 0.25, backend="sbert")
+        self.assertEqual(result.score, 1)  # composite 0.20 < 0.30
+
+    def test_weak_raw_sim_is_1(self) -> None:
+        co, po = NO_OVERLAP  # composite = 0.45*rescaled + 0.2
+        # raw 0.35 -> rescaled 0.20 -> 0.09 + 0.2 = 0.29 -> 1
+        self.assertEqual(score_pair(co, po, 0.35, backend="sbert").score, 1)
+
+    def test_moderate_raw_sim_is_2(self) -> None:
+        co, po = NO_OVERLAP
+        # raw 0.50 -> rescaled 0.50 -> 0.225 + 0.2 = 0.425 -> 2
+        self.assertEqual(score_pair(co, po, 0.50, backend="sbert").score, 2)
+
+    def test_strong_raw_sim_is_3(self) -> None:
+        co, po = NO_OVERLAP
+        # raw 0.65 -> rescaled 0.80 -> 0.36 + 0.2 = 0.56 -> 3 (raw >= 0.45 floor)
+        result = score_pair(co, po, 0.65, backend="sbert")
+        self.assertEqual(result.score, 3)
+        self.assertNotIn("capped", result.explanation)
+
+    def test_label_2_boundary(self) -> None:
+        co, po = NO_OVERLAP  # composite = 0.45*rescaled + 0.2 >= 0.30 iff rescaled >= 0.2222
+        self.assertEqual(score_pair(co, po, 0.362, backend="sbert").score, 2)  # 0.3008
+        self.assertEqual(score_pair(co, po, 0.360, backend="sbert").score, 1)  # 0.2990
+
+    def test_rescale_saturates_at_ceiling(self) -> None:
+        co, po = BLOOM_FAR  # composite = 0.45*rescaled
+        high = score_pair(co, po, 0.90, backend="sbert")  # rescaled clamps to 1.0
+        ceiling = score_pair(co, po, 0.75, backend="sbert")
+        self.assertEqual(high.confidence, ceiling.confidence)  # both 0.45
+
+
+class BertBandTest(unittest.TestCase):
+    """Raw mean-pooled BERT sims per band (anisotropic: everything runs high)."""
+
+    def test_unrelated_raw_sim_stays_at_0_or_low_1(self) -> None:
+        # Raw 0.55 is typical for UNRELATED text under mean-pooled BERT.
+        co, po = NO_OVERLAP  # bloom-default worst case
+        self.assertEqual(score_pair(co, po, 0.55, backend="bert").score, 1)  # 0.20
+        co_far, po_far = BLOOM_FAR
+        self.assertEqual(score_pair(co_far, po_far, 0.55, backend="bert").score, 0)  # 0.0
+
+    def test_weak_raw_sim_is_1(self) -> None:
+        co_far, po_far = BLOOM_FAR  # composite = 0.45*rescaled
+        # raw 0.65 -> rescaled 0.286 -> composite 0.129 -> 1
+        self.assertEqual(score_pair(co_far, po_far, 0.65, backend="bert").score, 1)
+
+    def test_moderate_raw_sim_is_2(self) -> None:
+        co, po = NO_OVERLAP
+        # raw 0.75 -> rescaled 0.571 -> 0.257 + 0.2 = 0.457 -> 2
+        self.assertEqual(score_pair(co, po, 0.75, backend="bert").score, 2)
+
+    def test_strong_raw_sim_is_3(self) -> None:
+        co, po = FULL_OVERLAP  # composite = 0.45*rescaled + 0.55
+        # raw 0.85 -> rescaled 0.857 -> 0.386 + 0.55 = 0.936 -> 3 (raw >= 0.70 floor)
+        result = score_pair(co, po, 0.85, backend="bert")
+        self.assertEqual(result.score, 3)
+        self.assertNotIn("capped", result.explanation)
 
 
 class SimilarityFloorTest(unittest.TestCase):
-    def test_sbert_label_3_requires_similarity_floor(self) -> None:
-        # Maximal feature overlap with weak MiniLM similarity: composite
-        # 0.45*0.30 + 0.55 = 0.685 >= 0.62, but sim 0.30 < 0.45 floor -> 2.
+    def test_sbert_label_3_requires_raw_similarity_floor(self) -> None:
+        # Maximal feature overlap with weak MiniLM similarity: raw 0.30 ->
+        # rescaled 0.10 -> composite 0.045 + 0.55 = 0.595 >= 0.50, but raw
+        # 0.30 < 0.45 floor -> capped at 2.
         co, po = FULL_OVERLAP
         result = score_pair(co, po, 0.30, backend="sbert")
         self.assertEqual(result.score, 2)
         self.assertIn("capped at 2", result.explanation)
 
     def test_sbert_label_3_allowed_above_floor(self) -> None:
-        co, po = FULL_OVERLAP  # composite = 0.45*0.46 + 0.55 = 0.757
+        co, po = FULL_OVERLAP  # raw 0.46 -> rescaled 0.42 -> 0.189 + 0.55 = 0.739
         result = score_pair(co, po, 0.46, backend="sbert")
         self.assertEqual(result.score, 3)
         self.assertNotIn("capped", result.explanation)
 
-    def test_bert_label_3_requires_similarity_floor(self) -> None:
-        # composite = 0.45*0.60 + 0.55 = 0.82 >= 0.72, but 0.60 < 0.70 -> 2.
+    def test_bert_label_3_requires_raw_similarity_floor(self) -> None:
+        # raw 0.60 -> rescaled 0.143 -> 0.064 + 0.55 = 0.614 >= 0.50, but
+        # raw 0.60 < 0.70 floor -> capped at 2.
         co, po = FULL_OVERLAP
         result = score_pair(co, po, 0.60, backend="bert")
         self.assertEqual(result.score, 2)
         self.assertIn("capped at 2", result.explanation)
+
+    def test_floor_values(self) -> None:
+        self.assertEqual(SIMILARITY_FLOOR_FOR_3["tfidf"], 0.0)
+        self.assertEqual(SIMILARITY_FLOOR_FOR_3["sbert"], 0.45)
+        self.assertEqual(SIMILARITY_FLOOR_FOR_3["bert"], 0.70)
+
+
+class ExplanationTest(unittest.TestCase):
+    def test_sbert_explanation_shows_rescaled_and_raw(self) -> None:
+        co, po = NO_OVERLAP
+        result = score_pair(co, po, 0.65, backend="sbert")
+        self.assertIn("semantic=0.80 (raw 0.65)", result.explanation)
+
+    def test_bert_explanation_shows_rescaled_and_raw(self) -> None:
+        co, po = NO_OVERLAP
+        result = score_pair(co, po, 0.725, backend="bert")
+        self.assertIn("semantic=0.50 (raw 0.72)", result.explanation)
+
+    def test_sbert_clamped_explanation_keeps_raw(self) -> None:
+        co, po = NO_OVERLAP
+        result = score_pair(co, po, 0.10, backend="sbert")
+        self.assertIn("semantic=0.00 (raw 0.10)", result.explanation)
 
 
 class BackendValidationTest(unittest.TestCase):
@@ -136,8 +246,8 @@ class BackendValidationTest(unittest.TestCase):
 
     def test_backend_is_case_insensitive(self) -> None:
         co, po = NO_OVERLAP
-        upper = score_pair(co, po, 0.2, backend="SBERT")
-        lower = score_pair(co, po, 0.2, backend="sbert")
+        upper = score_pair(co, po, 0.35, backend="SBERT")
+        lower = score_pair(co, po, 0.35, backend="sbert")
         self.assertEqual(upper, lower)
 
 
@@ -152,11 +262,12 @@ class PipelineBackendPassThroughTest(unittest.TestCase):
             co_file.write_text('[{"CO":"CO1","description":"alpha"}]')
             po_file.write_text('[{"PO":"PO1","description":"beta"}]')
 
-            # sim 0.2 with no feature overlap -> composite 0.29: label 1
-            # under tfidf cutoffs, 0 under sbert cutoffs. A "0" proves the
-            # backend reached score_pair.
+            # sim 0.35 with no feature overlap: under tfidf (identity) the
+            # composite is 0.3575 -> label 2; under sbert it is rescaled to
+            # 0.20 -> composite 0.29 -> label 1. A "1" plus the "(raw 0.35)"
+            # explanation proves the backend reached score_pair.
             with mock.patch(
-                "copo_mapper.pipeline.sbert_pair_similarity", return_value=[0.2]
+                "copo_mapper.pipeline.sbert_pair_similarity", return_value=[0.35]
             ):
                 pair_path, _ = run_pairwise_mapping(
                     str(co_file),
@@ -168,9 +279,10 @@ class PipelineBackendPassThroughTest(unittest.TestCase):
             with pair_path.open() as f:
                 rows = list(csv.DictReader(f))
             self.assertEqual(len(rows), 1)
-            self.assertEqual(rows[0]["predicted_strength"], "0")
+            self.assertEqual(rows[0]["predicted_strength"], "1")
             self.assertEqual(rows[0]["requested_backend"], "sbert")
             self.assertTrue(rows[0]["semantic_method"].startswith("sbert:"))
+            self.assertIn("(raw 0.35)", rows[0]["explanation"])
 
     def test_pipeline_tfidf_default_unchanged(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -191,6 +303,7 @@ class PipelineBackendPassThroughTest(unittest.TestCase):
             # under the unchanged tfidf cutoffs.
             self.assertEqual(rows[0]["predicted_strength"], "1")
             self.assertEqual(rows[0]["semantic_method"], "tfidf")
+            self.assertNotIn("raw", rows[0]["explanation"])
 
 
 if __name__ == "__main__":

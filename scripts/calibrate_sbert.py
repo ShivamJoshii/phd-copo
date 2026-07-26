@@ -1,11 +1,18 @@
 """
-Sanity-check SBERT threshold calibration in copo_mapper.scoring.
+Sanity-check SBERT similarity rescaling + shared thresholds in
+copo_mapper.scoring.
 
 Encodes hand-written CO/PO pairs of known relatedness (strong / moderate /
-weak / unrelated, education-flavored), prints the MiniLM cosine similarity
-distribution per band, then runs each pair through score_pair with
+weak / unrelated, education-flavored), prints the raw MiniLM cosine
+similarity distribution per band together with the rescaled value
+(SIMILARITY_RESCALE anchors), then runs each pair through score_pair with
 backend="sbert" and reports whether the predicted label matches the
 expected band.
+
+Use the per-band raw-similarity distribution printed at the end to check
+the rescale anchors: the "unrelated" band should sit at or below the lo
+anchor (rescaled ~0) and the "strong" band should rescale to >= ~0.6 so it
+can reach label 3 through the shared (0.50, 0.30, 0.10) cutoffs.
 
 Requires sentence-transformers:
     pip install sentence-transformers
@@ -22,7 +29,12 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from copo_mapper.preprocess import normalize_text
-from copo_mapper.scoring import THRESHOLDS, score_pair
+from copo_mapper.scoring import (
+    SIMILARITY_RESCALE,
+    THRESHOLDS,
+    rescale_similarity,
+    score_pair,
+)
 from copo_mapper.semantic import sbert_pair_similarity
 
 # (expected_label, band, co_text, po_text)
@@ -101,7 +113,9 @@ def main() -> int:
         return 1
 
     t3, t2, t1 = THRESHOLDS["sbert"]
-    print(f"sbert composite thresholds: t3={t3} t2={t2} t1={t1}")
+    lo, hi = SIMILARITY_RESCALE["sbert"]
+    print(f"shared composite thresholds: t3={t3} t2={t2} t1={t1}")
+    print(f"sbert rescale anchors: lo={lo} (unrelated floor) hi={hi} (paraphrase ceiling)")
     print()
 
     by_band: dict[str, list[float]] = {}
@@ -116,18 +130,22 @@ def main() -> int:
             mismatches += 1
         print(
             f"[{marker}] band={band:9s} expected={expected} predicted={result.score} "
-            f"sim={sim:.3f} composite={result.confidence:.3f}"
+            f"raw_sim={sim:.3f} rescaled={rescale_similarity(sim, 'sbert'):.3f} "
+            f"composite={result.confidence:.3f}"
         )
         print(f"       {result.explanation}")
 
     print()
-    print("Similarity distribution by band:")
+    print("Raw similarity distribution by band (rescaled in parentheses):")
     for band in ("strong", "moderate", "weak", "unrelated"):
         values = by_band.get(band, [])
         if values:
+            mean = sum(values) / len(values)
             print(
-                f"  {band:9s} n={len(values)} min={min(values):.3f} "
-                f"max={max(values):.3f} mean={sum(values) / len(values):.3f}"
+                f"  {band:9s} n={len(values)} "
+                f"min={min(values):.3f} ({rescale_similarity(min(values), 'sbert'):.3f}) "
+                f"max={max(values):.3f} ({rescale_similarity(max(values), 'sbert'):.3f}) "
+                f"mean={mean:.3f} ({rescale_similarity(mean, 'sbert'):.3f})"
             )
 
     print()
