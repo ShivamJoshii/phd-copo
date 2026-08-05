@@ -48,6 +48,10 @@ from copo_mapper.ui_helpers import (
     parse_raw_po_bytes,
 )
 from copo_mapper.ingest import to_canonical_co_rows, to_canonical_po_rows
+from copo_mapper.calibration import (
+    DRIFT_TOLERANCE,
+    calibrate,
+)
 
 OUTCOME_UPLOAD_TYPES = ["json", "csv"]
 FORMAT_RAW = "Raw faculty export"
@@ -1014,6 +1018,222 @@ def _program_tab() -> None:
     )
 
 
+def _calibration_real_texts() -> tuple[list[str], list[str]] | None:
+    """Unique CO / PO texts from the Step 1 grid, if a mapping has been run."""
+    pair_rows = st.session_state.get("pair_rows")
+    if not pair_rows:
+        return None
+    co_texts: dict[str, str] = {}
+    po_texts: dict[str, str] = {}
+    for row in pair_rows:
+        co_texts.setdefault(str(row["co_id"]), str(row["co_text"]))
+        po_texts.setdefault(str(row["po_id"]), str(row["po_text"]))
+    return list(co_texts.values()), list(po_texts.values())
+
+
+def _render_calibration_report(report) -> None:
+    st.markdown(f"#### {report.backend} — `{report.model}`")
+    st.caption(
+        f"thresholds (t3, t2, t1) = {report.thresholds} · "
+        f"current anchors (lo, hi) = {report.anchors}"
+    )
+
+    matched = len(report.banded_rows) - report.banded_mismatches
+    st.markdown(
+        f"**Banded pairs** — {matched}/{len(report.banded_rows)} matched the expected label"
+    )
+    st.dataframe(
+        [
+            {
+                "band": row.band,
+                "expected": row.expected,
+                "predicted": row.predicted,
+                "match": "ok" if row.predicted == row.expected else "MISS",
+                "raw sim": round(row.raw, 3),
+                "rescaled": round(row.rescaled, 3),
+                "composite": round(row.composite, 3),
+            }
+            for row in report.banded_rows
+        ],
+        width="stretch",
+    )
+    st.dataframe(
+        [
+            {
+                "band": s.band,
+                "n": s.n,
+                "raw min": round(s.raw_min, 3),
+                "raw max": round(s.raw_max, 3),
+                "raw mean": round(s.raw_mean, 3),
+            }
+            for s in report.band_summaries
+        ],
+        width="stretch",
+    )
+
+    st.markdown(
+        "**Near-paraphrase ceiling probes** (raw cosine of rewordings of the "
+        "same outcome): " + "  ".join(f"`{s:.3f}`" for s in report.paraphrase_sims)
+    )
+
+    if report.real_grid:
+        grid = report.real_grid
+        st.markdown(
+            f"**Real grid sweep** — {grid['n_cos']} COs × {grid['n_pos']} POs/PSOs = "
+            f"{grid['n_pairs']} pairs · raw cosine min {grid['raw_min']:.3f} / "
+            f"mean {grid['raw_mean']:.3f} / max {grid['raw_max']:.3f}"
+        )
+        st.dataframe(
+            [
+                {
+                    "percentile": name,
+                    "raw": round(values["raw"], 3),
+                    "rescaled": round(values["rescaled"], 3),
+                }
+                for name, values in grid["percentiles"].items()
+            ],
+            width="stretch",
+        )
+        st.markdown(
+            "Label distribution through `score_pair`: "
+            + "  ".join(
+                f"**{lab}**: {grid['label_counts'][lab]} ({grid['label_percent'][lab]}%)"
+                for lab in ("0", "1", "2", "3")
+            )
+        )
+        st.caption(
+            "Reference tfidf-validated program distribution: 0: 26% · 1: 72% · 2: 1.7% · 3: 0.2%"
+        )
+
+    suggestion = report.suggestion
+    st.markdown("**Anchor suggestion**")
+    st.dataframe(
+        [
+            {
+                "anchor": "lo (unrelated floor)",
+                "current": suggestion.lo_current,
+                "suggested": suggestion.lo_suggested,
+                "drift": suggestion.lo_drift,
+            },
+            {
+                "anchor": "hi (paraphrase ceiling)",
+                "current": suggestion.hi_current,
+                "suggested": suggestion.hi_suggested,
+                "drift": suggestion.hi_drift,
+            },
+        ],
+        width="stretch",
+    )
+    if suggestion.flagged:
+        st.warning(
+            f"Drift exceeds {DRIFT_TOLERANCE}: consider updating "
+            f"`scoring.SIMILARITY_RESCALE['{report.backend}']` to "
+            f"({suggestion.lo_suggested}, {suggestion.hi_suggested}) and re-checking "
+            f"`SIMILARITY_FLOOR_FOR_3['{report.backend}']` "
+            f"(currently {suggestion.floor3_current:.2f}) against the moderate/strong "
+            "band boundary."
+        )
+    else:
+        st.success(f"Drift within tolerance ({DRIFT_TOLERANCE}); current anchors stand.")
+
+
+def _calibration_tab() -> None:
+    st.subheader("Semantic backend calibration")
+    st.markdown(
+        "Empirically checks the SBERT/BERT similarity-rescale anchors "
+        "(`scoring.SIMILARITY_RESCALE`) against this deployment's actual models: "
+        "banded pairs of known relatedness, near-paraphrase ceiling probes, and an "
+        "optional sweep of the real CO × PO grid loaded in Step 1. "
+        "Nothing is modified automatically — apply flagged anchor changes in "
+        "`copo_mapper/scoring.py`."
+    )
+
+    backend_choice = st.radio(
+        "Backend(s)", ("sbert", "bert", "both"), horizontal=True, key="calib_backend"
+    )
+    with st.expander("Model overrides (optional)"):
+        sbert_model = st.text_input(
+            "SBERT model", value="", key="calib_sbert_model",
+            placeholder="sentence-transformers/all-MiniLM-L6-v2",
+        )
+        bert_model = st.text_input(
+            "BERT model", value="", key="calib_bert_model",
+            placeholder="google-bert/bert-base-uncased",
+        )
+        batch_size = int(
+            st.number_input(
+                "Real-grid batch size", min_value=16, max_value=1024, value=128, step=16,
+                key="calib_batch",
+            )
+        )
+
+    real_texts = _calibration_real_texts()
+    if real_texts:
+        include_real = st.checkbox(
+            f"Include real-grid sweep from Step 1 data "
+            f"({len(real_texts[0])} COs × {len(real_texts[1])} POs/PSOs)",
+            value=True,
+            key="calib_include_real",
+        )
+    else:
+        include_real = False
+        st.info(
+            "Run Step 1 mapping first to enable the real-grid sweep "
+            "(it reuses the uploaded CO/PO data)."
+        )
+
+    if not st.button("Run calibration", type="primary", key="calib_run"):
+        for backend in ("sbert", "bert"):
+            report = st.session_state.get(f"calib_report_{backend}")
+            if report is not None:
+                _render_calibration_report(report)
+        return
+
+    backends = ("sbert", "bert") if backend_choice == "both" else (backend_choice,)
+    for backend in backends:
+        model = (sbert_model if backend == "sbert" else bert_model).strip() or None
+        progress = st.progress(0.0, text=f"{backend}: loading model / encoding…")
+
+        def _update(fraction: float) -> None:
+            progress.progress(fraction, text=f"{backend}: real grid {fraction:.0%}")
+
+        try:
+            report = calibrate(
+                backend,
+                model=model,
+                real_co_texts=real_texts[0] if (include_real and real_texts) else None,
+                real_po_texts=real_texts[1] if (include_real and real_texts) else None,
+                batch_size=batch_size,
+                progress_cb=_update,
+            )
+        except Exception as exc:  # model download/load failures surface here
+            progress.empty()
+            st.error(f"{backend}: calibration failed — {exc}")
+            continue
+        progress.empty()
+        if report is None:
+            st.error(
+                f"{backend}: dependencies unavailable in this deployment "
+                "(check requirements.txt installed sentence-transformers / transformers / torch)."
+            )
+            continue
+        st.session_state[f"calib_report_{backend}"] = report
+        _render_calibration_report(report)
+
+    exportable = [
+        st.session_state[f"calib_report_{b}"].to_dict()
+        for b in ("sbert", "bert")
+        if st.session_state.get(f"calib_report_{b}") is not None
+    ]
+    if exportable:
+        st.download_button(
+            "Download calibration report (JSON)",
+            data=json.dumps(exportable, indent=2),
+            file_name="calibration_report.json",
+            mime="application/json",
+        )
+
+
 def main() -> None:
     st.set_page_config(page_title="CO-PO Mapper + Attainment UI", layout="wide")
     st.title("CO-PO Mapping & Attainment Workbench")
@@ -1022,12 +1242,13 @@ def main() -> None:
         "Each step pushes its outputs into the next."
     )
 
-    tab_map, tab_att, tab_sem, tab_prog = st.tabs(
+    tab_map, tab_att, tab_sem, tab_prog, tab_calib = st.tabs(
         [
             "Step 1: Mapping",
             "Step 2: Course Attainment",
             "Step 3: Semester",
             "Step 4: Program",
+            "Calibration",
         ]
     )
     with tab_map:
@@ -1038,6 +1259,8 @@ def main() -> None:
         _semester_tab()
     with tab_prog:
         _program_tab()
+    with tab_calib:
+        _calibration_tab()
 
 
 if __name__ == "__main__":
