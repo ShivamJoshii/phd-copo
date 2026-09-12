@@ -395,6 +395,31 @@ After running Stage 2, the Streamlit app shows a **"Why did targets miss?"** pan
 Every lever is verified by construction: applying the suggested value reaches the
 target in the same arithmetic the pipeline uses (see `tests/test_diagnostics.py`).
 
+### Reasoning & CQI action plans (`copo_mapper/action_plan.py`)
+
+The diagnosis says *where* a miss comes from; the action-plan layer says *why*
+(in pedagogical terms) and *what to do*:
+
+- **Expert decision tree** — a deterministic, auditable tree over the
+  attainment components maps every missed CO/PO to a reason category
+  (prerequisites, content gap, internal assessment design, pedagogy,
+  engagement, indirect/survey issue, curriculum alignment) with the exact
+  decision path shown, plus a CQI action-plan template. Missed POs trace
+  through their dragging COs and inherit the dominant underlying reason
+  (drag-weighted).
+- **Faculty reasoning capture** — in the Step 2 "Reasoning & CQI action
+  plans" panel, faculty confirm or override the suggested reason, record
+  free-text reasoning and the corrective action. Records download/upload as
+  CSV so they accumulate across courses and semesters.
+- **Learned decision tree (ML)** — an interpretable scikit-learn
+  `DecisionTreeClassifier` trains on the accumulated faculty-labelled
+  records (features: MA/EA/Indirect, final, gap, weakest input; label: the
+  confirmed reason). It unlocks at 12 labelled CO records with ≥2 distinct
+  reasons, reports cross-validated accuracy, renders its learned rules as
+  text, and its predictions are shown next to the expert tree's so the two
+  can be compared. Without scikit-learn everything degrades gracefully to
+  the expert tree (`tests/test_action_plan.py`).
+
 ### Systemic drivers (`copo_mapper/ml_drivers.py`)
 
 The interpretable, small-data ML layer. As you analyse multiple courses in the

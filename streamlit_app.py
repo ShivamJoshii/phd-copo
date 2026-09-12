@@ -24,6 +24,18 @@ from copo_mapper.attainment import (
     run_attainment_analysis_from_objects,
 )
 from copo_mapper.diagnostics import diagnose_course
+from copo_mapper.action_plan import (
+    REASON_ORDER,
+    REASON_TAXONOMY,
+    merge_records,
+    predict_reason,
+    record_from_co,
+    record_from_po,
+    records_from_csv,
+    records_to_csv,
+    suggest_for_course,
+    train_reason_tree,
+)
 from copo_mapper.ml_drivers import (
     observation_from_co,
     rank_drivers,
@@ -483,6 +495,155 @@ def _render_diagnosis(diagnosis) -> None:
                     )
 
 
+def _reason_selectbox(key: str, default_reason: str) -> str:
+    options = REASON_ORDER
+    labels = {rid: REASON_TAXONOMY[rid].label for rid in options}
+    index = options.index(default_reason) if default_reason in options else 0
+    return st.selectbox(
+        "Reason (confirm or override)",
+        options,
+        index=index,
+        format_func=lambda rid: labels[rid],
+        key=key,
+    )
+
+
+def _save_action_plan_record(record) -> None:
+    existing = st.session_state.get("action_plan_records", [])
+    st.session_state["action_plan_records"] = merge_records(existing, [record])
+
+
+def _render_one_action_plan(exp, level: str, course_label: str, suggestion, ml_model) -> None:
+    outcome_id = exp.co_id if level == "CO" else exp.po_id
+    key_base = f"ap_{course_label}_{level}_{outcome_id}"
+    with st.expander(f"📋 {outcome_id} — {REASON_TAXONOMY[suggestion.reason_id].label}"):
+        st.markdown("**Decision path (expert tree):**")
+        for step in suggestion.decision_path:
+            st.write(f"→ {step}")
+
+        if ml_model is not None and level == "CO":
+            predicted = predict_reason(ml_model, exp)
+            if predicted is not None:
+                reason_id, probability = predicted
+                agrees = reason_id == suggestion.reason_id
+                st.caption(
+                    f"🤖 Learned tree predicts: **{REASON_TAXONOMY.get(reason_id, REASON_TAXONOMY['other']).label}** "
+                    f"(p={probability:.0%}) — "
+                    + ("agrees with the expert tree." if agrees else "differs from the expert tree; decide which fits.")
+                )
+
+        reason_id = _reason_selectbox(f"{key_base}_reason", suggestion.reason_id)
+        st.caption(REASON_TAXONOMY[reason_id].description)
+        reasoning_text = st.text_area(
+            "Reasoning (why did this outcome miss?)",
+            value="",
+            placeholder="e.g. Unit 3 & 4 were compressed after the mid-term reschedule; "
+            "internal Q3 mapped to this CO was above Bloom level taught.",
+            key=f"{key_base}_why",
+        )
+        default_actions = "\n".join(f"- {a}" for a in REASON_TAXONOMY[reason_id].actions)
+        action_plan = st.text_area(
+            "Action plan (how will it be fixed?)",
+            value=default_actions,
+            key=f"{key_base}_plan_{reason_id}",
+        )
+        if st.button("Save reasoning & action plan", key=f"{key_base}_save"):
+            maker = record_from_co if level == "CO" else record_from_po
+            record = maker(
+                exp,
+                course_id=course_label,
+                suggested_reason=suggestion.reason_id,
+                reason=reason_id,
+                reasoning_text=reasoning_text,
+                action_plan=action_plan,
+            )
+            _save_action_plan_record(record)
+            st.success(f"Recorded {level} {outcome_id} ({REASON_TAXONOMY[reason_id].label}).")
+
+
+def _render_action_plans(diagnosis, course_label: str) -> None:
+    st.markdown("### Reasoning & CQI action plans")
+    st.caption(
+        "For every missed outcome, an expert decision tree proposes the likely reason and a "
+        "corrective action plan; confirm or override it and save. Saved records become the "
+        "labelled dataset the learned (ML) decision tree trains on."
+    )
+
+    suggestions = suggest_for_course(diagnosis)
+    records = st.session_state.get("action_plan_records", [])
+
+    # Learned tree, trained on everything recorded/imported so far.
+    ml_model, ml_message = train_reason_tree(records)
+
+    if not suggestions:
+        st.success("No missed outcomes — nothing needs an action plan for this course.")
+    else:
+        missed_cos = {e.co_id: e for e in diagnosis.missed_cos}
+        missed_pos = {e.po_id: e for e in diagnosis.missed_pos}
+        for (level, outcome_id), suggestion in suggestions.items():
+            exp = missed_cos.get(outcome_id) if level == "CO" else missed_pos.get(outcome_id)
+            if exp is not None:
+                _render_one_action_plan(exp, level, course_label, suggestion, ml_model)
+
+    st.markdown("**Recorded action plans**")
+    if records:
+        st.dataframe(
+            [
+                {
+                    "course": r.course_id,
+                    "level": r.level,
+                    "outcome": r.outcome_id,
+                    "reason": REASON_TAXONOMY.get(r.reason, REASON_TAXONOMY["other"]).label,
+                    "suggested": REASON_TAXONOMY.get(
+                        r.suggested_reason, REASON_TAXONOMY["other"]
+                    ).label,
+                    "reasoning": (r.reasoning_text or "")[:80],
+                    "action plan": (r.action_plan or "")[:80],
+                }
+                for r in records
+            ],
+            width="stretch",
+        )
+        st.download_button(
+            "Download action-plan records (CSV)",
+            data=records_to_csv(records),
+            file_name="action_plan_records.csv",
+            mime="text/csv",
+        )
+    else:
+        st.info("No action plans recorded yet in this session.")
+
+    upload = st.file_uploader(
+        "Load previously saved records (CSV) to keep training the learned tree across sessions",
+        type=["csv"],
+        key="ap_upload",
+    )
+    if upload is not None and st.session_state.get("_ap_upload_fid") != upload.file_id:
+        loaded = records_from_csv(decode_text_bytes(upload.getvalue()))
+        st.session_state["action_plan_records"] = merge_records(records, loaded)
+        st.session_state["_ap_upload_fid"] = upload.file_id
+        st.success(f"Merged {len(loaded)} record(s); total now {len(st.session_state['action_plan_records'])}.")
+        st.rerun()
+
+    with st.expander("🌳 Learned decision tree (ML) — status & rules"):
+        if ml_model is None:
+            st.info(ml_message)
+        else:
+            st.write(f"Model quality: {ml_message}.")
+            st.write(
+                "Class counts: "
+                + ", ".join(
+                    f"{REASON_TAXONOMY.get(c, REASON_TAXONOMY['other']).label}: {n}"
+                    for c, n in ml_model.class_counts.items()
+                )
+            )
+            st.caption(
+                "Learned rules (features: MA/EA/Indirect attainment, final, gap, and "
+                "which input is weakest). Every prediction follows these branches:"
+            )
+            st.code(ml_model.rules_text, language="text")
+
+
 def _render_systemic_drivers() -> None:
     """Cross-course driver analysis built up from each course you run."""
     store = st.session_state.get("co_observations_by_course", {})
@@ -718,6 +879,7 @@ def _attainment_tab() -> None:
         st.session_state["target_summary"] = target_summary
         st.session_state["course_summary"] = course_summary
         st.session_state["diagnosis"] = diagnosis
+        st.session_state["diagnosis_course"] = course_label
 
     if "co_summary" not in st.session_state:
         return
@@ -736,6 +898,10 @@ def _attainment_tab() -> None:
 
     if "diagnosis" in st.session_state:
         _render_diagnosis(st.session_state["diagnosis"])
+        _render_action_plans(
+            st.session_state["diagnosis"],
+            st.session_state.get("diagnosis_course", "course"),
+        )
 
     _render_systemic_drivers()
 
