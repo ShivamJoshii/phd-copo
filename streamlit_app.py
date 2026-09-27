@@ -25,6 +25,7 @@ from copo_mapper.attainment import (
 )
 from copo_mapper.diagnostics import diagnose_course
 from copo_mapper.action_plan import (
+    MIN_TRAIN_SAMPLES,
     REASON_ORDER,
     REASON_TAXONOMY,
     merge_records,
@@ -566,13 +567,16 @@ def _render_action_plans(diagnosis, course_label: str) -> None:
     st.caption(
         "For every missed outcome, an expert decision tree proposes the likely reason and a "
         "corrective action plan; confirm or override it and save. Saved records become the "
-        "labelled dataset the learned (ML) decision tree trains on."
+        "labelled dataset the learned (ML) decision tree trains on. With no labels yet, the "
+        "ML tree bootstraps from exemplars distilled from the expert rules — it works from "
+        "the very first run and adapts as your confirmations accumulate."
     )
 
     suggestions = suggest_for_course(diagnosis)
     records = st.session_state.get("action_plan_records", [])
 
-    # Learned tree, trained on everything recorded/imported so far.
+    # Learned tree: bootstrapped from expert-rule exemplars until enough
+    # faculty labels exist, then trained on faculty labels alone.
     ml_model, ml_message = train_reason_tree(records)
 
     if not suggestions:
@@ -580,6 +584,34 @@ def _render_action_plans(diagnosis, course_label: str) -> None:
     else:
         missed_cos = {e.co_id: e for e in diagnosis.missed_cos}
         missed_pos = {e.po_id: e for e in diagnosis.missed_pos}
+
+        if st.button(
+            f"✅ Accept all {len(suggestions)} suggested reason(s) & action plans",
+            key=f"ap_accept_all_{course_label}",
+            help="Records every missed outcome with the expert tree's suggested reason and "
+            "action template in one click — the fastest way to build the labelled dataset. "
+            "You can still edit and re-save individual outcomes afterwards.",
+        ):
+            new_records = []
+            for (level, outcome_id), suggestion in suggestions.items():
+                exp = missed_cos.get(outcome_id) if level == "CO" else missed_pos.get(outcome_id)
+                if exp is None:
+                    continue
+                maker = record_from_co if level == "CO" else record_from_po
+                new_records.append(
+                    maker(
+                        exp,
+                        course_id=course_label,
+                        suggested_reason=suggestion.reason_id,
+                        reason=suggestion.reason_id,
+                        reasoning_text="; ".join(suggestion.decision_path),
+                        action_plan="\n".join(f"- {a}" for a in suggestion.actions),
+                    )
+                )
+            st.session_state["action_plan_records"] = merge_records(records, new_records)
+            st.success(f"Recorded {len(new_records)} outcome(s) with their suggested reasons.")
+            st.rerun()
+
         for (level, outcome_id), suggestion in suggestions.items():
             exp = missed_cos.get(outcome_id) if level == "CO" else missed_pos.get(outcome_id)
             if exp is not None:
@@ -625,11 +657,23 @@ def _render_action_plans(diagnosis, course_label: str) -> None:
         st.success(f"Merged {len(loaded)} record(s); total now {len(st.session_state['action_plan_records'])}.")
         st.rerun()
 
-    with st.expander("🌳 Learned decision tree (ML) — status & rules"):
+    stage_labels = {
+        "bootstrapped": "Stage 0 · bootstrapped from expert rules",
+        "hybrid": "Stage 1 · hybrid (faculty labels + expert exemplars)",
+        "faculty": "Stage 2 · trained on faculty labels",
+    }
+    stage_suffix = f" — {stage_labels.get(ml_model.stage, ml_model.stage)}" if ml_model else ""
+    with st.expander(f"🌳 Learned decision tree (ML){stage_suffix}"):
         if ml_model is None:
             st.info(ml_message)
         else:
-            st.write(f"Model quality: {ml_message}.")
+            st.write(f"Model status: {ml_message}")
+            if ml_model.stage != "faculty":
+                st.progress(
+                    min(1.0, ml_model.n_faculty / MIN_TRAIN_SAMPLES),
+                    text=f"{ml_model.n_faculty}/{MIN_TRAIN_SAMPLES} faculty labels toward "
+                    "a fully faculty-trained model",
+                )
             st.write(
                 "Class counts: "
                 + ", ".join(

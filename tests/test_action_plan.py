@@ -5,6 +5,8 @@ from __future__ import annotations
 import unittest
 
 from copo_mapper.action_plan import (
+    SEED_COURSE_ID,
+    generate_seed_records,
     REASON_TAXONOMY,
     ActionPlanRecord,
     merge_records,
@@ -187,13 +189,13 @@ def synthetic_records(n_per_class: int = 8) -> list[ActionPlanRecord]:
 
 class LearnedTreeTest(unittest.TestCase):
     def test_refuses_below_min_samples(self) -> None:
-        model, message = train_reason_tree(synthetic_records(2))  # 4 records
+        model, message = train_reason_tree(synthetic_records(2), bootstrap=False)  # 4 records
         self.assertIsNone(model)
         self.assertIn("unlocks at", message)
 
     def test_refuses_single_class(self) -> None:
         records = [r for r in synthetic_records(12) if r.reason == "pedagogy"]
-        model, message = train_reason_tree(records)
+        model, message = train_reason_tree(records, bootstrap=False)
         self.assertIsNone(model)
         self.assertIn("one reason", message)
 
@@ -202,7 +204,7 @@ class LearnedTreeTest(unittest.TestCase):
         for record in records:
             record.level = "PO"
             record.ma = record.ea = record.indirect = None
-        model, message = train_reason_tree(records)
+        model, message = train_reason_tree(records, bootstrap=False)
         self.assertIsNone(model)
         self.assertIn("0 labelled CO record(s)", message)
 
@@ -215,7 +217,7 @@ class LearnedTreeTest(unittest.TestCase):
         self.assertIsNotNone(model, message)
         self.assertEqual(sorted(model.classes), ["assessment_design", "pedagogy"])
         self.assertTrue(model.rules_text.strip())
-        self.assertIn("trained on 16 records", message)
+        self.assertIn("trained on 16 faculty-labelled records", message)
 
         ma_weak = co_explanation(0.52, 0.81, 0.74)
         reason_id, probability = predict_reason(model, ma_weak)
@@ -234,6 +236,67 @@ class LearnedTreeTest(unittest.TestCase):
         model, _ = train_reason_tree(synthetic_records(8))
         met = co_explanation(0.9, 0.9, 0.9)
         self.assertIsNone(predict_reason(model, met))
+
+
+class BootstrapTest(unittest.TestCase):
+    def _skip_without_sklearn(self):
+        try:
+            import sklearn  # noqa: F401
+        except ImportError:
+            self.skipTest("scikit-learn not installed")
+
+    def test_seed_records_match_expert_tree_labels(self) -> None:
+        records = generate_seed_records(per_reason=4)
+        self.assertGreaterEqual(len(records), 20)  # 6 reasons x 4, some regions may fall short
+        for record in records:
+            self.assertEqual(record.course_id, SEED_COURSE_ID)
+            self.assertEqual(record.reason, record.suggested_reason)
+            self.assertIn(record.reason, REASON_TAXONOMY)
+
+    def test_seed_records_deterministic(self) -> None:
+        a = generate_seed_records(per_reason=3, seed=7)
+        b = generate_seed_records(per_reason=3, seed=7)
+        self.assertEqual([r.to_row() for r in a], [r.to_row() for r in b])
+
+    def test_bootstrapped_model_works_with_zero_labels(self) -> None:
+        self._skip_without_sklearn()
+        model, message = train_reason_tree([])
+        self.assertIsNotNone(model, message)
+        self.assertEqual(model.stage, "bootstrapped")
+        self.assertEqual(model.n_faculty, 0)
+        self.assertGreater(model.n_seed, 0)
+        self.assertGreaterEqual(model.seed_fidelity, 0.8)
+        self.assertIn("bootstrapped", message)
+        # It must predict a sensible reason for a fresh MA-weak miss.
+        exp = co_explanation(0.52, 0.81, 0.74)
+        reason_id, probability = predict_reason(model, exp)
+        self.assertEqual(reason_id, "assessment_design")
+        self.assertGreaterEqual(probability, 0.5)
+
+    def test_hybrid_stage_with_few_faculty_labels(self) -> None:
+        self._skip_without_sklearn()
+        records = synthetic_records(2)  # 4 faculty labels, below the threshold
+        model, message = train_reason_tree(records)
+        self.assertIsNotNone(model, message)
+        self.assertEqual(model.stage, "hybrid")
+        self.assertEqual(model.n_faculty, 4)
+        self.assertGreater(model.n_seed, 0)
+        self.assertIn("hybrid", message)
+
+    def test_faculty_stage_drops_seeds(self) -> None:
+        self._skip_without_sklearn()
+        model, message = train_reason_tree(synthetic_records(8))  # 16 faculty labels
+        self.assertIsNotNone(model, message)
+        self.assertEqual(model.stage, "faculty")
+        self.assertEqual(model.n_seed, 0)
+        self.assertEqual(model.n_samples, 16)
+
+    def test_seed_course_records_never_count_as_faculty(self) -> None:
+        self._skip_without_sklearn()
+        model, _ = train_reason_tree(generate_seed_records(per_reason=4))
+        self.assertEqual(model.stage, "bootstrapped")
+        self.assertEqual(model.n_faculty, 0)
+
 
 
 if __name__ == "__main__":

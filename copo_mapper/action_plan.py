@@ -476,9 +476,87 @@ def merge_records(
 # ---------------------------------------------------------------------------
 # Learned decision tree (scikit-learn, guarded)
 # ---------------------------------------------------------------------------
+#
+# Cold start ("no labelled data yet") is solved by BOOTSTRAPPING: the tree is
+# seeded with synthetic exemplar misses generated through the real attainment
+# pipeline and labelled by the expert decision tree itself (knowledge
+# distillation / weak supervision). The model therefore works from the very
+# first run — initially it mirrors the expert rules — and as faculty confirm
+# or override reasons, their records join training with a higher sample
+# weight, bending the tree toward the institution's real patterns. Stages:
+#
+#   bootstrapped  — seed exemplars only (day one)
+#   hybrid        — seed + faculty labels (faculty weighted FACULTY_WEIGHT x)
+#   faculty       — >= MIN_TRAIN_SAMPLES faculty labels: seeds drop out
+#
+# The stage is reported on the model so the UI (and the thesis) can state
+# exactly what the predictions rest on at any point in time.
 
 MIN_TRAIN_SAMPLES = 12
 FEATURE_NAMES = ["ma", "ea", "indirect", "final", "gap", "weak_MA", "weak_EA", "weak_Indirect"]
+
+SEED_COURSE_ID = "__seed__"
+FACULTY_WEIGHT = 3.0
+BOOTSTRAP_TARGET = 2.1
+
+# Canonical component patterns (MA, EA, Indirect) at the centre of each
+# CO-level reason's region; seeds are jittered around these and kept only if
+# the expert tree assigns the intended label, so seed labels are exact.
+_SEED_PATTERNS: dict[str, tuple[float, float, float]] = {
+    "engagement": (0.30, 0.30, 0.30),
+    "indirect_low": (0.75, 0.75, 0.20),
+    "prerequisites": (0.42, 0.45, 0.80),
+    "content_gap": (0.60, 0.62, 0.85),
+    "assessment_design": (0.52, 0.80, 0.75),
+    "pedagogy": (0.80, 0.52, 0.75),
+}
+
+
+def generate_seed_records(per_reason: int = 8, seed: int = 0) -> list[ActionPlanRecord]:
+    """Synthetic exemplar misses, labelled by the expert tree itself.
+
+    Each record is produced through the production pipeline
+    (compute_co_attainment -> diagnose_co -> suggest_reason_co) with the
+    default institutional weights (MA 0.4, Direct 0.8) and target
+    BOOTSTRAP_TARGET, so features and labels are exactly consistent with
+    what real data would produce. Deterministic for a given ``seed``.
+    """
+    import random  # noqa: PLC0415
+
+    from .attainment import COAttainmentInput, WeightConfig, compute_co_attainment  # noqa: PLC0415
+    from .diagnostics import diagnose_co  # noqa: PLC0415
+
+    rng = random.Random(seed)
+    config = WeightConfig(0.4, 0.6, 0.8, 0.2, BOOTSTRAP_TARGET, BOOTSTRAP_TARGET)
+    records: list[ActionPlanRecord] = []
+    for reason_id, (ma0, ea0, ind0) in _SEED_PATTERNS.items():
+        made = 0
+        attempts = 0
+        while made < per_reason and attempts < per_reason * 50:
+            attempts += 1
+            ma = min(1.0, max(0.0, ma0 + rng.uniform(-0.06, 0.06)))
+            ea = min(1.0, max(0.0, ea0 + rng.uniform(-0.06, 0.06)))
+            ind = min(1.0, max(0.0, ind0 + rng.uniform(-0.06, 0.06)))
+            (result,) = compute_co_attainment(
+                [COAttainmentInput(f"SEED-{reason_id}-{made}", ma, ea, ind)], config
+            )
+            exp = diagnose_co(result, config)
+            if exp.achieved:
+                continue
+            suggestion = suggest_reason_co(exp)
+            if suggestion is None or suggestion.reason_id != reason_id:
+                continue
+            records.append(
+                record_from_co(
+                    exp,
+                    course_id=SEED_COURSE_ID,
+                    suggested_reason=reason_id,
+                    reason=reason_id,
+                    reasoning_text="bootstrap exemplar distilled from the expert decision tree",
+                )
+            )
+            made += 1
+    return records
 
 
 def _featurize(record: ActionPlanRecord) -> list[float] | None:
@@ -505,40 +583,71 @@ class TrainedReasonTree:
     class_counts: dict[str, int]
     rules_text: str
     cv_accuracy: float | None
+    stage: str = "faculty"          # "bootstrapped" | "hybrid" | "faculty"
+    n_faculty: int = 0
+    n_seed: int = 0
+    seed_fidelity: float | None = None   # bootstrap stages: fraction of seed exemplars reproduced
+    faculty_agreement: float | None = None  # hybrid: accuracy on the faculty rows
     feature_names: list[str] = field(default_factory=lambda: list(FEATURE_NAMES))
     _clf: object = None
+
+
+def _new_clf(max_depth: int):
+    from sklearn.tree import DecisionTreeClassifier  # noqa: PLC0415
+
+    return DecisionTreeClassifier(
+        max_depth=max_depth,
+        min_samples_leaf=2,
+        class_weight="balanced",
+        random_state=0,
+    )
 
 
 def train_reason_tree(
     records: Sequence[ActionPlanRecord],
     min_samples: int = MIN_TRAIN_SAMPLES,
     max_depth: int = 3,
+    bootstrap: bool = True,
 ) -> tuple[TrainedReasonTree | None, str]:
-    """Train the interpretable reason classifier on faculty-labelled records.
+    """Train the interpretable reason classifier; works from day one.
 
-    Returns (model, message). model is None whenever training is not yet
-    honest (too few samples / classes) or scikit-learn is unavailable; the
+    Faculty-labelled CO records are the real signal. Below ``min_samples`` of
+    them, ``bootstrap=True`` (default) mixes in synthetic exemplars distilled
+    from the expert decision tree (``generate_seed_records``), with faculty
+    rows weighted ``FACULTY_WEIGHT``x so real corrections dominate wherever
+    they exist. At >= ``min_samples`` faculty labels (>= 2 reasons), seeds
+    drop out entirely.
+
+    Returns (model, message). model is None only when scikit-learn is missing
+    or (with ``bootstrap=False``) the faculty data alone is insufficient; the
     message always says why or reports quality.
     """
-    rows: list[list[float]] = []
-    labels: list[str] = []
+    faculty_rows: list[list[float]] = []
+    faculty_labels: list[str] = []
     for record in records:
+        if record.course_id == SEED_COURSE_ID:
+            continue
         features = _featurize(record)
         if features is not None:
-            rows.append(features)
-            labels.append(record.reason)
+            faculty_rows.append(features)
+            faculty_labels.append(record.reason)
 
-    if len(rows) < min_samples:
+    faculty_sufficient = (
+        len(faculty_rows) >= min_samples and len(set(faculty_labels)) >= 2
+    )
+
+    if not faculty_sufficient and not bootstrap:
+        if len(faculty_rows) < min_samples:
+            return None, (
+                f"{len(faculty_rows)} labelled CO record(s) so far — the learned tree unlocks at "
+                f"{min_samples}. Until then the expert decision tree provides suggestions."
+            )
+        only = sorted(set(faculty_labels))[0]
         return None, (
-            f"{len(rows)} labelled CO record(s) so far — the learned tree unlocks at "
-            f"{min_samples}. Until then the expert decision tree provides suggestions."
-        )
-    distinct = sorted(set(labels))
-    if len(distinct) < 2:
-        return None, (
-            f"All {len(rows)} labelled records share one reason ('{distinct[0]}'); "
+            f"All {len(faculty_rows)} labelled records share one reason ('{only}'); "
             "a classifier needs at least two distinct reasons."
         )
+
     if importlib.util.find_spec("sklearn") is None:
         return None, (
             "scikit-learn is not installed in this runtime; expert-tree suggestions "
@@ -546,36 +655,60 @@ def train_reason_tree(
         )
 
     from sklearn.model_selection import StratifiedKFold, cross_val_score  # noqa: PLC0415
-    from sklearn.tree import DecisionTreeClassifier, export_text  # noqa: PLC0415
+    from sklearn.tree import export_text  # noqa: PLC0415
 
-    clf = DecisionTreeClassifier(
-        max_depth=max_depth,
-        min_samples_leaf=2,
-        class_weight="balanced",
-        random_state=0,
-    )
-    clf.fit(rows, labels)
+    seed_rows: list[list[float]] = []
+    seed_labels: list[str] = []
+    if faculty_sufficient:
+        stage = "faculty"
+    else:
+        for record in generate_seed_records():
+            features = _featurize(record)
+            if features is not None:
+                seed_rows.append(features)
+                seed_labels.append(record.reason)
+        stage = "hybrid" if faculty_rows else "bootstrapped"
 
+    rows = seed_rows + faculty_rows
+    labels = seed_labels + faculty_labels
+    weights = [1.0] * len(seed_rows) + [FACULTY_WEIGHT] * len(faculty_rows)
+
+    # The six expert-rule regions need a slightly deeper tree to distill
+    # faithfully (depth 3 caps at 8 leaves but the splits don't line up);
+    # depth 4 reproduces the seed set exactly while staying interpretable.
+    effective_depth = max_depth if stage == "faculty" else max(max_depth, 4)
+    clf = _new_clf(effective_depth)
+    clf.fit(rows, labels, sample_weight=weights)
+    distinct = sorted(set(labels))
     counts = {label: labels.count(label) for label in distinct}
-    min_class = min(counts.values())
+
     cv_accuracy: float | None = None
-    if min_class >= 2 and len(rows) >= min_samples:
-        folds = min(3, min_class)
-        try:
-            scores = cross_val_score(
-                DecisionTreeClassifier(
-                    max_depth=max_depth,
-                    min_samples_leaf=2,
-                    class_weight="balanced",
-                    random_state=0,
-                ),
-                rows,
-                labels,
-                cv=StratifiedKFold(n_splits=folds, shuffle=True, random_state=0),
+    seed_fidelity: float | None = None
+    faculty_agreement: float | None = None
+    if stage == "faculty":
+        min_class = min(counts.values())
+        if min_class >= 2:
+            folds = min(3, min_class)
+            try:
+                scores = cross_val_score(
+                    _new_clf(max_depth),
+                    rows,
+                    labels,
+                    cv=StratifiedKFold(n_splits=folds, shuffle=True, random_state=0),
+                )
+                cv_accuracy = round(float(statistics.fmean(scores)), 3)
+            except ValueError:
+                cv_accuracy = None
+    else:
+        predicted_seed = clf.predict(seed_rows)
+        seed_fidelity = round(
+            sum(p == t for p, t in zip(predicted_seed, seed_labels)) / len(seed_rows), 3
+        )
+        if faculty_rows:
+            predicted_fac = clf.predict(faculty_rows)
+            faculty_agreement = round(
+                sum(p == t for p, t in zip(predicted_fac, faculty_labels)) / len(faculty_rows), 3
             )
-            cv_accuracy = round(float(statistics.fmean(scores)), 3)
-        except ValueError:
-            cv_accuracy = None
 
     model = TrainedReasonTree(
         n_samples=len(rows),
@@ -583,13 +716,33 @@ def train_reason_tree(
         class_counts=counts,
         rules_text=export_text(clf, feature_names=FEATURE_NAMES),
         cv_accuracy=cv_accuracy,
+        stage=stage,
+        n_faculty=len(faculty_rows),
+        n_seed=len(seed_rows),
+        seed_fidelity=seed_fidelity,
+        faculty_agreement=faculty_agreement,
         _clf=clf,
     )
-    quality = (
-        f"trained on {len(rows)} records, {len(distinct)} reasons"
-        + (f", {cv_accuracy:.0%} cross-validated accuracy" if cv_accuracy is not None else
-           ", too few per-class samples for cross-validation")
-    )
+
+    if stage == "bootstrapped":
+        quality = (
+            f"bootstrapped from {len(seed_rows)} expert-rule exemplars (no faculty labels yet); "
+            f"distillation fidelity {seed_fidelity:.0%}. Save or accept reasons to start "
+            "adapting it to your real data."
+        )
+    elif stage == "hybrid":
+        quality = (
+            f"hybrid: {len(faculty_rows)} faculty label(s) (weighted {FACULTY_WEIGHT:.0f}x) + "
+            f"{len(seed_rows)} expert-rule exemplars; seed fidelity {seed_fidelity:.0%}"
+            + (f", faculty agreement {faculty_agreement:.0%}" if faculty_agreement is not None else "")
+            + f". Seeds drop out at {min_samples} faculty labels."
+        )
+    else:
+        quality = (
+            f"trained on {len(rows)} faculty-labelled records, {len(distinct)} reasons"
+            + (f", {cv_accuracy:.0%} cross-validated accuracy" if cv_accuracy is not None else
+               ", too few per-class samples for cross-validation")
+        )
     return model, quality
 
 

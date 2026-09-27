@@ -412,13 +412,24 @@ The diagnosis says *where* a miss comes from; the action-plan layer says *why*
   free-text reasoning and the corrective action. Records download/upload as
   CSV so they accumulate across courses and semesters.
 - **Learned decision tree (ML)** — an interpretable scikit-learn
-  `DecisionTreeClassifier` trains on the accumulated faculty-labelled
-  records (features: MA/EA/Indirect, final, gap, weakest input; label: the
-  confirmed reason). It unlocks at 12 labelled CO records with ≥2 distinct
-  reasons, reports cross-validated accuracy, renders its learned rules as
-  text, and its predictions are shown next to the expert tree's so the two
-  can be compared. Without scikit-learn everything degrades gracefully to
-  the expert tree (`tests/test_action_plan.py`).
+  `DecisionTreeClassifier` (features: MA/EA/Indirect, final, gap, weakest
+  input; label: the confirmed reason) that **works from day one** via a
+  three-stage cold-start design:
+  - *Stage 0 — bootstrapped*: with no labels at all, it trains on synthetic
+    exemplar misses generated through the real pipeline and labelled by the
+    expert tree itself (knowledge distillation; distillation fidelity is
+    reported, 100% on the shipped seed set).
+  - *Stage 1 — hybrid*: faculty confirmations/overrides join training with
+    3× sample weight, bending the tree toward the institution's real
+    patterns wherever they disagree with the rules.
+  - *Stage 2 — faculty*: at 12+ faculty-labelled CO records (≥2 distinct
+    reasons) the seeds drop out and it reports cross-validated accuracy.
+  The current stage is always displayed, learned rules render as text, and
+  predictions appear next to the expert tree's so the two can be compared.
+  An "Accept all suggested reasons" button records every diagnosed miss in
+  one click — running a few historical courses through the app builds the
+  labelled dataset quickly. Without scikit-learn everything degrades
+  gracefully to the expert tree (`tests/test_action_plan.py`).
 
 ### Systemic drivers (`copo_mapper/ml_drivers.py`)
 
