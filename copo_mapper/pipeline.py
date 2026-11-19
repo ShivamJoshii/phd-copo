@@ -113,6 +113,7 @@ def run_pairwise_mapping(
         row["predicted_strength"] = result.score
         row["confidence"] = result.confidence
         row["explanation"] = result.explanation
+        row["reasoning"] = result.reasoning
         row["semantic_method"] = semantic_method
         row["requested_backend"] = semantic_backend
 
@@ -134,6 +135,7 @@ def run_pairwise_mapping(
                 "semantic_method",
                 "requested_backend",
                 "explanation",
+                "reasoning",
             ],
         )
         writer.writeheader()

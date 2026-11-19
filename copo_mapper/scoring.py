@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 
+from .reasoning import ReasoningInputs, build_pair_reasoning
 from .features import (
     GENERIC_DOMAINS,
     bloom_distance,
@@ -132,6 +133,7 @@ class PairScore:
     score: int
     confidence: float
     explanation: str
+    reasoning: str = ""
 
 
 def score_pair(
@@ -217,4 +219,26 @@ def score_pair(
             f"; capped at 2: raw semantic similarity below the {backend} floor for label 3 "
             f"({SIMILARITY_FLOOR_FOR_3[backend]:.2f})"
         )
-    return PairScore(score=label, confidence=round(composite, 3), explanation=explanation)
+    reasoning = build_pair_reasoning(
+        ReasoningInputs(
+            label=label,
+            composite=composite,
+            rescaled_similarity=rescaled_similarity,
+            domain_overlap=domain_overlap,
+            token_overlap=token_overlap,
+            shared_domains=frozenset(shared_domains),
+            shared_token_stems=frozenset(co_tokens & po_tokens),
+            co_text=co_text,
+            co_bloom=co_bloom,
+            po_bloom=po_bloom,
+            thresholds=(t3, t2, t1),
+            capped=capped,
+            floor_for_3=SIMILARITY_FLOOR_FOR_3[backend],
+        )
+    )
+    return PairScore(
+        score=label,
+        confidence=round(composite, 3),
+        explanation=explanation,
+        reasoning=reasoning,
+    )
