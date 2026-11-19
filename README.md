@@ -281,6 +281,32 @@ git checkout work
 ```
 
 
+## Mapping reasoning & faculty review (Stage 1)
+
+**Reasoning for reviewers.** Every CO-PO pair now carries a plain-language
+`reasoning` column (in `pair_predictions.csv` and the app's Pair Details),
+built from the same signals the scorer uses (`copo_mapper/reasoning.py`):
+
+> *Moderate (2). The CO and PO share moderate subject matter (semantic
+> similarity 0.42). Both address: databases. Shared key terms: "design",
+> "database". Cognitive levels are close (CO is at 'Apply', PO at 'Analyze',
+> 1 level apart). Overall score 0.38; 0.50 is needed for Substantial.*
+
+It never changes a score. When a rating rests mainly on Bloom-level alignment
+rather than shared content, the reasoning says so, so reviewers know which
+cells to check. The technical `explanation` column is unchanged.
+
+**Editable matrix with faculty reasons.** Under *Review & edit mapping* any
+cell can be changed (0–3). Each change needs a category and a written reason
+before it can be saved (`copo_mapper/mapping_review.py`):
+
+- the predicted matrix is kept unchanged; the **reviewed** matrix (predicted +
+  overrides) is what Stage 2 uses, and overridden cells are marked `*`;
+- exports: reviewed `matrix.csv`, `pair_predictions.csv` with `final_strength`
+  and override columns, and `mapping_overrides.csv`;
+- `mapping_overrides.csv` can be uploaded again to re-apply a saved review to
+  a later run. These records are also labelled data for a future trained mapper.
+
 ## Stage 2: Attainment Analysis Engine
 
 This stage consumes:

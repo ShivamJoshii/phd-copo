@@ -61,6 +61,17 @@ from copo_mapper.ui_helpers import (
     parse_raw_po_bytes,
 )
 from copo_mapper.ingest import to_canonical_co_rows, to_canonical_po_rows
+from copo_mapper.mapping_review import (
+    OVERRIDE_CATEGORIES,
+    annotate_pair_rows,
+    apply_overrides,
+    build_overrides,
+    diff_matrices,
+    matrix_from_rows,
+    matrix_to_rows,
+    overrides_from_csv,
+    overrides_to_csv,
+)
 from copo_mapper.calibration import (
     DRIFT_TOLERANCE,
     calibrate,
@@ -136,7 +147,9 @@ def _co_attainment_template_csv(co_ids: list[str]) -> str:
     return buffer.getvalue()
 
 
-def _matrix_html(header: list[str], rows: list[list[str]]) -> str:
+def _matrix_html(
+    header: list[str], rows: list[list[str]], overridden: set[tuple[str, str]] | None = None
+) -> str:
     html = [
         "<table style='border-collapse: collapse; width: 100%;'>",
         "<thead><tr>",
@@ -153,8 +166,12 @@ def _matrix_html(header: list[str], rows: list[list[str]]) -> str:
             else:
                 strength = int(val)
                 bg = COLOR_BY_STRENGTH.get(strength, "#ffffff")
+                is_override = overridden is not None and (row[0], header[i]) in overridden
+                border = "2px solid #333" if is_override else "1px solid #ccc"
+                label = f"{val}*" if is_override else f"{val}"
                 html.append(
-                    f"<td style='border:1px solid #ccc; padding:6px; text-align:center; background:{bg}'>{val}</td>"
+                    f"<td style='border:{border}; padding:6px; text-align:center; "
+                    f"background:{bg}; font-weight:{700 if is_override else 400}'>{label}</td>"
                 )
         html.append("</tr>")
 
@@ -387,28 +404,42 @@ def _mapping_tab() -> None:
 
         st.session_state["pair_rows"] = pair_rows
         st.session_state["matrix_header"] = matrix_header
-        st.session_state["matrix_rows"] = matrix_rows
-        st.session_state["matrix_csv"] = _csv_from_matrix(matrix_header, matrix_rows)
+        st.session_state["predicted_matrix_rows"] = matrix_rows
+        st.session_state["mapping_overrides"] = []
+        st.session_state["mapping_reason_drafts"] = {}
+        st.session_state["matrix_editor_version"] = st.session_state.get("matrix_editor_version", 0) + 1
 
     if "pair_rows" not in st.session_state:
         return
 
     pair_rows: list[dict[str, str]] = st.session_state["pair_rows"]
     matrix_header: list[str] = st.session_state["matrix_header"]
-    matrix_rows: list[list[str]] = st.session_state["matrix_rows"]
+    po_ids = matrix_header[1:]
+    predicted = matrix_from_rows(matrix_header, st.session_state["predicted_matrix_rows"])
+    overrides = st.session_state.get("mapping_overrides", [])
 
+    # Reviewed matrix (predicted + faculty overrides) is what Stage 2 consumes.
+    reviewed = apply_overrides(predicted, overrides)
+    matrix_rows = matrix_to_rows(reviewed, po_ids)
+    st.session_state["matrix_rows"] = matrix_rows
+    st.session_state["matrix_csv"] = _csv_from_matrix(matrix_header, matrix_rows)
+    overridden_cells = {(o.co_id, o.po_id) for o in overrides}
+    override_by_cell = {(o.co_id, o.po_id): o for o in overrides}
 
-    st.markdown(_matrix_html(matrix_header, matrix_rows), unsafe_allow_html=True)
-    st.caption("Color scale: 0=red, 1=yellow, 2=blue, 3=green")
+    st.markdown(_matrix_html(matrix_header, matrix_rows, overridden_cells), unsafe_allow_html=True)
+    st.caption(
+        "Color scale: 0=red, 1=yellow, 2=blue, 3=green. "
+        "Cells marked * were changed by faculty review; Stage 2 uses this reviewed matrix."
+    )
 
     co_ids = sorted({row["co_id"] for row in pair_rows})
-    po_ids = sorted({row["po_id"] for row in pair_rows})
+    pair_po_ids = sorted({row["po_id"] for row in pair_rows})
 
     left, right = st.columns(2)
     with left:
         selected_co = st.selectbox("Select CO", co_ids)
     with right:
-        selected_po = st.selectbox("Select PO", po_ids)
+        selected_po = st.selectbox("Select PO", pair_po_ids)
 
     selected = next(
         (row for row in pair_rows if row["co_id"] == selected_co and row["po_id"] == selected_po),
@@ -420,25 +451,168 @@ def _mapping_tab() -> None:
         st.write(f"**CO ({selected['co_id']}):** {selected['co_text']}")
         st.write(f"**PO ({selected['po_id']}):** {selected['po_text']}")
         st.write(f"**Predicted strength:** {selected['predicted_strength']}")
-        st.write(f"**Confidence:** {selected.get('confidence', 'N/A')}")
-        st.write(f"**Semantic method used:** {selected.get('semantic_method', 'N/A')}")
-        st.write(f"**Explanation:** {selected.get('explanation', 'N/A')}")
+        st.info(f"**Why this mapping:** {selected.get('reasoning', 'N/A')}")
+        ov = override_by_cell.get((selected["co_id"], selected["po_id"]))
+        if ov is not None:
+            who = f" by {ov.reviewer}" if ov.reviewer else ""
+            st.warning(
+                f"**Faculty review{who}:** changed {ov.predicted_strength} → {ov.final_strength} "
+                f"({ov.category}). {ov.reason}"
+            )
+        with st.expander("Technical scores"):
+            st.write(f"**Confidence:** {selected.get('confidence', 'N/A')}")
+            st.write(f"**Semantic method used:** {selected.get('semantic_method', 'N/A')}")
+            st.write(f"**Explanation:** {selected.get('explanation', 'N/A')}")
 
-    c1, c2 = st.columns(2)
+    _render_mapping_review(predicted, reviewed, po_ids, pair_rows)
+
+    annotated = annotate_pair_rows(pair_rows, st.session_state.get("mapping_overrides", []))
+    c1, c2, c3 = st.columns(3)
     with c1:
         st.download_button(
             "Export Pair Predictions CSV",
-            data=_csv_from_rows(pair_rows),
+            data=_csv_from_rows(annotated),
             file_name="pair_predictions.csv",
             mime="text/csv",
         )
     with c2:
         st.download_button(
-            "Export Matrix CSV",
+            "Export Reviewed Matrix CSV",
             data=st.session_state["matrix_csv"],
             file_name="matrix.csv",
             mime="text/csv",
         )
+    with c3:
+        st.download_button(
+            "Export Faculty Overrides CSV",
+            data=overrides_to_csv(st.session_state.get("mapping_overrides", [])),
+            file_name="mapping_overrides.csv",
+            mime="text/csv",
+        )
+
+
+def _render_mapping_review(predicted, reviewed, po_ids: list[str], pair_rows: list[dict[str, str]]) -> None:
+    """Editable matrix + required reason per changed cell."""
+    st.subheader("Review & edit mapping")
+    st.write(
+        "Change any cell below, give a reason for each change, then **Save review**. "
+        "The predicted matrix is kept unchanged; only the reviewed matrix flows into Stage 2."
+    )
+    version = st.session_state.get("matrix_editor_version", 0)
+
+    r1, r2 = st.columns(2)
+    with r1:
+        reviewer = st.text_input("Reviewer name", key="mapping_reviewer")
+    with r2:
+        upload = st.file_uploader(
+            "Re-apply saved overrides (mapping_overrides.csv)", type=["csv"], key="mapping_overrides_upload"
+        )
+    if upload is not None and st.session_state.get("_mapping_ov_fid") != upload.file_id:
+        try:
+            loaded = overrides_from_csv(decode_text_bytes(upload.getvalue(), source=upload.name or "overrides"))
+        except (ValueError, KeyError) as err:
+            st.error(f"Could not read overrides: {err}")
+        else:
+            known = [o for o in loaded if o.co_id in predicted and o.po_id in predicted[o.co_id]]
+            st.session_state["mapping_overrides"] = known
+            st.session_state["_mapping_ov_fid"] = upload.file_id
+            st.session_state["matrix_editor_version"] = version + 1
+            skipped = len(loaded) - len(known)
+            note = f" ({skipped} skipped: CO/PO not in this run)" if skipped else ""
+            st.success(f"Applied {len(known)} override(s){note}.")
+            st.rerun()
+
+    editor_rows = [{"co_id": co, **{po: int(cells[po]) for po in po_ids}} for co, cells in reviewed.items()]
+    column_config = {"co_id": st.column_config.TextColumn("CO", disabled=True)}
+    for po in po_ids:
+        column_config[po] = st.column_config.SelectboxColumn(po, options=[0, 1, 2, 3], required=True)
+    edited_rows = st.data_editor(
+        editor_rows,
+        key=f"matrix_editor_v{version}",
+        num_rows="fixed",
+        width="stretch",
+        column_config=column_config,
+    )
+    edited = {str(r["co_id"]): {po: int(r[po]) for po in po_ids} for r in edited_rows}
+
+    changes = diff_matrices(predicted, edited)
+    if not changes:
+        st.caption("No changes from the predicted matrix.")
+        if st.session_state.get("mapping_overrides"):
+            if st.button("Save review", key="save_mapping_review_clear"):
+                st.session_state["mapping_overrides"] = []
+                st.rerun()
+        return
+
+    existing = {(o.co_id, o.po_id): o for o in st.session_state.get("mapping_overrides", [])}
+    drafts: dict = st.session_state.setdefault("mapping_reason_drafts", {})
+    reasoning_by_cell = {(r["co_id"], r["po_id"]): r.get("reasoning", "") for r in pair_rows}
+    reason_rows = []
+    for co, po, old, new in changes:
+        prev = existing.get((co, po))
+        draft = drafts.get((co, po))
+        default_cat = OVERRIDE_CATEGORIES[0] if new > old else OVERRIDE_CATEGORIES[1]
+        reason_rows.append(
+            {
+                "CO": co,
+                "PO": po,
+                "Predicted": old,
+                "New": new,
+                "Category": draft[0] if draft else (prev.category if prev else default_cat),
+                "Reason": draft[1] if draft else (prev.reason if prev else ""),
+                "System reasoning": reasoning_by_cell.get((co, po), ""),
+            }
+        )
+    st.markdown(f"**{len(changes)} changed cell(s), reason required for each:**")
+    edited_reasons = st.data_editor(
+        reason_rows,
+        key=f"mapping_reason_editor_v{version}_{len(changes)}_{hash(tuple(changes))}",
+        num_rows="fixed",
+        width="stretch",
+        column_config={
+            "CO": st.column_config.TextColumn(disabled=True),
+            "PO": st.column_config.TextColumn(disabled=True),
+            "Predicted": st.column_config.NumberColumn(disabled=True),
+            "New": st.column_config.NumberColumn(disabled=True),
+            "Category": st.column_config.SelectboxColumn(options=list(OVERRIDE_CATEGORIES), required=True),
+            "Reason": st.column_config.TextColumn(required=True, width="large"),
+            "System reasoning": st.column_config.TextColumn(disabled=True, width="large"),
+        },
+    )
+
+    reasons = {
+        (str(r["CO"]), str(r["PO"])): (str(r.get("Category") or ""), str(r.get("Reason") or ""))
+        for r in edited_reasons
+    }
+    drafts.update(reasons)  # keep typed reasons if another cell is edited before saving
+
+    b1, b2 = st.columns(2)
+    with b1:
+        if st.button("Save review", type="primary", key="save_mapping_review"):
+            try:
+                saved = build_overrides(
+                    predicted,
+                    edited,
+                    reasons,
+                    reviewer=reviewer,
+                    previous=st.session_state.get("mapping_overrides", []),
+                )
+            except ValueError as err:
+                st.error(str(err))
+            else:
+                st.session_state["mapping_overrides"] = saved
+                st.success(f"Saved {len(saved)} override(s). Stage 2 now uses the reviewed matrix.")
+                st.rerun()
+    with b2:
+        if st.button("Revert to predicted matrix", key="revert_mapping_review"):
+            st.session_state["mapping_overrides"] = []
+            st.session_state["mapping_reason_drafts"] = {}
+            st.session_state["matrix_editor_version"] = version + 1
+            st.rerun()
+    if {
+        (o.co_id, o.po_id, o.final_strength) for o in st.session_state["mapping_overrides"]
+    } != {(c, p, n) for c, p, _, n in changes}:
+        st.caption("Unsaved changes: Stage 2 still uses the last saved review until you click Save review.")
 
 
 def _render_diagnosis(diagnosis) -> None:
