@@ -37,6 +37,13 @@ from dataclasses import asdict, dataclass, field
 from io import StringIO
 from typing import Sequence
 
+from .cqi_rules import (
+    CONTEXT_FEATURE_NAMES,
+    Context,
+    band,
+    band_name,
+    context_features,
+)
 from .diagnostics import COExplanation, CourseDiagnosis, POExplanation
 
 # ---------------------------------------------------------------------------
@@ -100,6 +107,28 @@ REASON_TAXONOMY: dict[str, Reason] = {
             ),
         ),
         Reason(
+            "lenient_internal",
+            "Internal marking lenient vs end-semester",
+            "Internal (MA) sits two or more bands above external (EA): internal marking is "
+            "too lenient or not aligned with the end-semester standard, so internal marks "
+            "overstate what students can do in the exam.",
+            (
+                "Moderate internal papers against the end-semester standard; use a second examiner.",
+                "Balance the Bloom levels of internal questions with the end-semester paper.",
+                "Add previous-year papers, a mock exam and answer-writing practice.",
+            ),
+        ),
+        Reason(
+            "borderline",
+            "Borderline shortfall (no single cause)",
+            "All three inputs sit just below the required level: a general small shortfall "
+            "rather than one failing instrument or topic.",
+            (
+                "Add weekly quizzes or short assignments to force regular practice.",
+                "Give this CO's topics a few more contact hours and a tutorial sheet.",
+            ),
+        ),
+        Reason(
             "engagement",
             "Student engagement / attendance",
             "All three inputs are far below target together — a systemic engagement "
@@ -119,6 +148,16 @@ REASON_TAXONOMY: dict[str, Reason] = {
                 "Check survey administration: timing, coverage, and student awareness of COs.",
                 "Communicate 'closing the loop': show students how past feedback changed the course.",
                 "Review survey instrument wording against the CO statements.",
+            ),
+        ),
+        Reason(
+            "overestimation",
+            "Students overrate their own learning",
+            "The survey (indirect) is high while both internal and external marks are low: "
+            "students believe they achieved the outcome but the marks do not show it.",
+            (
+                "Set application-level questions with formative feedback so students see their real level.",
+                "Explain each CO at the start and show students where they stand against it.",
             ),
         ),
         Reason(
@@ -146,6 +185,8 @@ REASON_ORDER: list[str] = list(REASON_TAXONOMY)
 # Severity cutoffs used by the expert tree (fractions of the required level).
 SEVERE_GAP_RATIO = 0.25
 SYSTEMIC_GAP_RATIO = 0.33
+BORDERLINE_GAP_RATIO = 0.10   # all inputs low but the gap is this small -> borderline
+BAND_GAP_FOR_MISMATCH = 2     # bands apart for "lenient internal" / "overestimation"
 
 
 @dataclass(frozen=True)
@@ -199,6 +240,12 @@ def suggest_reason_co(exp: COExplanation) -> ReasonSuggestion | None:
             f"{needed:.2f} with a large gap (> {SYSTEMIC_GAP_RATIO:.0%}) → systemic engagement problem"
         )
         return _suggestion("engagement", path)
+    if all_low and gap_ratio <= BORDERLINE_GAP_RATIO:
+        path.append(
+            f"MA {ma:.2f}, EA {ea:.2f} and Indirect {indirect:.2f} are all just below "
+            f"{needed:.2f} (gap ≤ {BORDERLINE_GAP_RATIO:.0%}) → borderline shortfall, no single cause"
+        )
+        return _suggestion("borderline", path)
     path.append(
         "Not a systemic collapse (some input near target or gap moderate) → inspect individual inputs"
     )
@@ -212,6 +259,12 @@ def suggest_reason_co(exp: COExplanation) -> ReasonSuggestion | None:
 
     if ma < needed and ea < needed:
         path.append(f"Both MA ({ma:.2f}) and EA ({ea:.2f}) are below {needed:.2f}")
+        if indirect >= needed and band(indirect) - max(band(ma), band(ea)) >= BAND_GAP_FOR_MISMATCH:
+            path.append(
+                f"Indirect ({indirect:.2f}, {band_name(indirect)}) is {BAND_GAP_FOR_MISMATCH}+ bands above "
+                f"both marks ({band_name(ma)} / {band_name(ea)}) → students overrate their own learning"
+            )
+            return _suggestion("overestimation", path)
         if gap_ratio > SEVERE_GAP_RATIO:
             path.append(
                 f"Gap ratio {gap_ratio:.0%} > {SEVERE_GAP_RATIO:.0%} → severe joint deficit "
@@ -232,6 +285,13 @@ def suggest_reason_co(exp: COExplanation) -> ReasonSuggestion | None:
         return _suggestion("assessment_design", path)
 
     if ea < needed <= ma:
+        if band(ma) - band(ea) >= BAND_GAP_FOR_MISMATCH:
+            path.append(
+                f"EA ({ea:.2f}, {band_name(ea)}) is {BAND_GAP_FOR_MISMATCH}+ bands below MA "
+                f"({ma:.2f}, {band_name(ma)}) → internal marking is lenient against the "
+                "end-semester standard"
+            )
+            return _suggestion("lenient_internal", path)
         path.append(
             f"EA ({ea:.2f}) below {needed:.2f} while MA ({ma:.2f}) meets it → end-semester "
             "performance lags classroom-proximate assessment"
@@ -328,6 +388,17 @@ RECORD_FIELDS = [
     "reason",           # faculty-confirmed reason_id (the ML label)
     "reasoning_text",
     "action_plan",
+    # --- term key + context + CQI sheet columns (all optional) ---
+    "academic_year",
+    "semester",
+    "course_type",
+    "bloom_level",
+    "map_strength",
+    "class_size",
+    "prev_attained",
+    "action_code",
+    "responsible",
+    "review_date",
 ]
 
 
@@ -347,11 +418,32 @@ class ActionPlanRecord:
     reason: str
     reasoning_text: str = ""
     action_plan: str = ""
+    academic_year: str = ""
+    semester: str = ""
+    course_type: str = ""
+    bloom_level: str = ""
+    map_strength: float | None = None
+    class_size: int | None = None
+    prev_attained: float | None = None
+    action_code: str = ""           # one or more catalogue codes, ", " joined
+    responsible: str = ""
+    review_date: str = ""
+
+    @property
+    def context(self) -> Context:
+        return Context(
+            course_type=self.course_type,
+            bloom_level=self.bloom_level,
+            map_strength=self.map_strength,
+            class_size=self.class_size,
+            prev_attained=self.prev_attained,
+        )
 
     def to_row(self) -> dict[str, str]:
         row = asdict(self)
-        for key in ("ma", "ea", "indirect"):
+        for key in ("ma", "ea", "indirect", "map_strength", "prev_attained"):
             row[key] = "" if row[key] is None else f"{row[key]:.4f}"
+        row["class_size"] = "" if row["class_size"] is None else str(int(row["class_size"]))
         for key in ("final", "target", "gap"):
             row[key] = f"{float(row[key]):.4f}"
         return {k: str(row[k]) for k in RECORD_FIELDS}
@@ -365,6 +457,7 @@ def record_from_co(
     reason: str,
     reasoning_text: str = "",
     action_plan: str = "",
+    **extra,
 ) -> ActionPlanRecord:
     return ActionPlanRecord(
         course_id=course_id,
@@ -381,6 +474,7 @@ def record_from_co(
         reason=reason,
         reasoning_text=reasoning_text,
         action_plan=action_plan,
+        **extra,
     )
 
 
@@ -392,6 +486,7 @@ def record_from_po(
     reason: str,
     reasoning_text: str = "",
     action_plan: str = "",
+    **extra,
 ) -> ActionPlanRecord:
     worst = exp.contributions[0].co_id if exp.contributions else ""
     return ActionPlanRecord(
@@ -409,6 +504,7 @@ def record_from_po(
         reason=reason,
         reasoning_text=reasoning_text,
         action_plan=action_plan,
+        **extra,
     )
 
 
@@ -446,6 +542,18 @@ def records_from_csv(text: str) -> list[ActionPlanRecord]:
                     reason=str(row.get("reason", "")).strip(),
                     reasoning_text=str(row.get("reasoning_text", "")),
                     action_plan=str(row.get("action_plan", "")),
+                    academic_year=str(row.get("academic_year") or "").strip(),
+                    semester=str(row.get("semester") or "").strip(),
+                    course_type=str(row.get("course_type") or "").strip(),
+                    bloom_level=str(row.get("bloom_level") or "").strip().lower(),
+                    map_strength=_opt_float(row.get("map_strength")),
+                    class_size=(
+                        int(size) if (size := _opt_float(row.get("class_size"))) is not None else None
+                    ),
+                    prev_attained=_opt_float(row.get("prev_attained")),
+                    action_code=str(row.get("action_code") or "").strip(),
+                    responsible=str(row.get("responsible") or "").strip(),
+                    review_date=str(row.get("review_date") or "").strip(),
                 )
             )
         except (TypeError, ValueError):
@@ -466,10 +574,14 @@ def _opt_float(value: object) -> float | None:
 def merge_records(
     existing: Sequence[ActionPlanRecord], incoming: Sequence[ActionPlanRecord]
 ) -> list[ActionPlanRecord]:
-    """Merge by (course, level, outcome); incoming rows win."""
-    merged = {(r.course_id, r.level, r.outcome_id): r for r in existing}
+    """Merge by (year, semester, course, level, outcome); incoming rows win."""
+
+    def key(r: ActionPlanRecord) -> tuple[str, str, str, str, str]:
+        return (r.academic_year, r.semester, r.course_id, r.level, r.outcome_id)
+
+    merged = {key(r): r for r in existing}
     for record in incoming:
-        merged[(record.course_id, record.level, record.outcome_id)] = record
+        merged[key(record)] = record
     return list(merged.values())
 
 
@@ -493,7 +605,13 @@ def merge_records(
 # exactly what the predictions rest on at any point in time.
 
 MIN_TRAIN_SAMPLES = 12
-FEATURE_NAMES = ["ma", "ea", "indirect", "final", "gap", "weak_MA", "weak_EA", "weak_Indirect"]
+FEATURE_NAMES = [
+    "ma", "ea", "indirect", "final", "gap", "weak_MA", "weak_EA", "weak_Indirect",
+    # Context features (not part of the attainment formula). Unknown = -1, so
+    # they are constant on the expert-rule seeds and only matter once faculty
+    # records carry them.
+    *CONTEXT_FEATURE_NAMES,
+]
 
 SEED_COURSE_ID = "__seed__"
 FACULTY_WEIGHT = 3.0
@@ -505,10 +623,13 @@ BOOTSTRAP_TARGET = 2.1
 _SEED_PATTERNS: dict[str, tuple[float, float, float]] = {
     "engagement": (0.30, 0.30, 0.30),
     "indirect_low": (0.75, 0.75, 0.20),
-    "prerequisites": (0.42, 0.45, 0.80),
+    "prerequisites": (0.42, 0.48, 0.66),
     "content_gap": (0.60, 0.62, 0.85),
     "assessment_design": (0.52, 0.80, 0.75),
-    "pedagogy": (0.80, 0.52, 0.75),
+    "pedagogy": (0.76, 0.64, 0.75),
+    "lenient_internal": (0.80, 0.50, 0.75),
+    "overestimation": (0.42, 0.45, 0.82),
+    "borderline": (0.67, 0.67, 0.67),
 }
 
 
@@ -573,6 +694,7 @@ def _featurize(record: ActionPlanRecord) -> list[float] | None:
         1.0 if record.weakest == "MA" else 0.0,
         1.0 if record.weakest == "EA" else 0.0,
         1.0 if record.weakest == "Indirect" else 0.0,
+        *context_features(record.context),
     ]
 
 
@@ -676,7 +798,7 @@ def train_reason_tree(
     # The six expert-rule regions need a slightly deeper tree to distill
     # faithfully (depth 3 caps at 8 leaves but the splits don't line up);
     # depth 4 reproduces the seed set exactly while staying interpretable.
-    effective_depth = max_depth if stage == "faculty" else max(max_depth, 4)
+    effective_depth = max_depth if stage == "faculty" else max(max_depth, 6)
     clf = _new_clf(effective_depth)
     clf.fit(rows, labels, sample_weight=weights)
     distinct = sorted(set(labels))
@@ -747,7 +869,7 @@ def train_reason_tree(
 
 
 def predict_reason(
-    model: TrainedReasonTree, exp: COExplanation
+    model: TrainedReasonTree, exp: COExplanation, context: Context | None = None
 ) -> tuple[str, float] | None:
     """Predict (reason_id, probability) for a missed CO from the learned tree."""
     if model._clf is None or exp.achieved:
@@ -761,6 +883,7 @@ def predict_reason(
         1.0 if exp.weakest_component == "MA" else 0.0,
         1.0 if exp.weakest_component == "EA" else 0.0,
         1.0 if exp.weakest_component == "Indirect" else 0.0,
+        *context_features(context),
     ]
     clf = model._clf
     probabilities = clf.predict_proba([features])[0]

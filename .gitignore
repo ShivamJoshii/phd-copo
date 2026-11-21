@@ -4,3 +4,7 @@ outputs/
 .venv/
 attainment_outputs/
 out_ingest/
+
+# CQI database (local data, never commit)
+*.sqlite
+*.sqlite-journal
