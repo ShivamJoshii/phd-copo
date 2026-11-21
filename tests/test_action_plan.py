@@ -64,11 +64,26 @@ class ExpertTreeCOTest(unittest.TestCase):
         self.assertEqual(suggestion.reason_id, "assessment_design")
 
     def test_ea_low_ma_fine_is_pedagogy(self) -> None:
-        suggestion = suggest_reason_co(co_explanation(0.80, 0.55, 0.75))
+        # EA one band below MA (High vs Medium) -> pedagogy.
+        suggestion = suggest_reason_co(co_explanation(0.72, 0.62, 0.72))
         self.assertEqual(suggestion.reason_id, "pedagogy")
 
-    def test_both_low_severe_is_prerequisites(self) -> None:
+    def test_ea_two_bands_below_ma_is_lenient_internal(self) -> None:
+        # MA High, EA Low: internal marking overstates end-semester ability (R3).
+        suggestion = suggest_reason_co(co_explanation(0.80, 0.55, 0.75))
+        self.assertEqual(suggestion.reason_id, "lenient_internal")
+
+    def test_survey_high_marks_low_is_overestimation(self) -> None:
+        # Both marks Very Low, survey High (R7).
         suggestion = suggest_reason_co(co_explanation(0.40, 0.45, 0.80))
+        self.assertEqual(suggestion.reason_id, "overestimation")
+
+    def test_all_just_below_is_borderline(self) -> None:
+        suggestion = suggest_reason_co(co_explanation(0.67, 0.67, 0.67))
+        self.assertEqual(suggestion.reason_id, "borderline")
+
+    def test_both_low_severe_is_prerequisites(self) -> None:
+        suggestion = suggest_reason_co(co_explanation(0.42, 0.48, 0.66))
         self.assertEqual(suggestion.reason_id, "prerequisites")
 
     def test_both_low_moderate_is_content_gap(self) -> None:

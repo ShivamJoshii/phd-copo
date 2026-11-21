@@ -38,6 +38,7 @@ from typing import Sequence
 
 from .action_plan import REASON_TAXONOMY, suggest_for_course
 from .attainment import WeightConfig
+from .cqi_rules import REASON_CODES, actions_for, severity, slab
 from .diagnostics import COExplanation, CourseDiagnosis, POExplanation
 
 
@@ -54,11 +55,15 @@ class NonAttainmentRow:
     indirect: str
     main_cause: str           # e.g. "External (end-semester) — 61% of the loss"
     loss_breakdown: str       # "Internal 0.03 (22%) · External 0.08 (61%) · Indirect 0.02 (17%)"
+    slab: int                 # attainment slab 0..3
+    severity: str             # how serious the miss is, from the slab
+    reason_code: str          # R1..R8 reference code
     assumed_reason: str       # reason label
     assumption: str           # why we assume it (taxonomy description)
     decision_path: str        # branches taken, " → " joined
     cheapest_fix: str
-    suggested_actions: str    # " | " joined
+    action_codes: str         # catalogue codes, ", " joined
+    suggested_actions: str    # " | " joined, worded for the course type
 
 
 ROW_FIELDS = [f.name for f in fields(NonAttainmentRow)]
@@ -105,7 +110,9 @@ def _fmt_losses(losses: dict[str, float]) -> tuple[str, str]:
     return main_cause, breakdown
 
 
-def _co_row(exp: COExplanation, config: WeightConfig, suggestion, direct: float) -> NonAttainmentRow:
+def _co_row(
+    exp: COExplanation, config: WeightConfig, suggestion, direct: float, course_type: str = ""
+) -> NonAttainmentRow:
     main_cause, breakdown = _fmt_losses(co_losses(exp, config))
     reason = REASON_TAXONOMY[suggestion.reason_id] if suggestion else None
     fix = (
@@ -127,15 +134,23 @@ def _co_row(exp: COExplanation, config: WeightConfig, suggestion, direct: float)
         indirect=f"{c['Indirect']:.2f}",
         main_cause=main_cause,
         loss_breakdown=breakdown,
+        slab=slab(exp.scaled),
+        severity=severity(exp.scaled),
+        reason_code=REASON_CODES.get(suggestion.reason_id, "") if suggestion else "",
         assumed_reason=reason.label if reason else "",
         assumption=reason.description if reason else "",
         decision_path=" → ".join(suggestion.decision_path) if suggestion else "",
         cheapest_fix=fix,
-        suggested_actions=" | ".join(suggestion.actions) if suggestion else "",
+        action_codes=", ".join(c for c, _ in actions_for(suggestion.reason_id, course_type)) if suggestion else "",
+        suggested_actions=(
+            " | ".join(t for _, t in actions_for(suggestion.reason_id, course_type)) if suggestion else ""
+        ),
     )
 
 
-def _po_row(exp: POExplanation, suggestion, missed_co_ids: set[str]) -> NonAttainmentRow:
+def _po_row(
+    exp: POExplanation, suggestion, missed_co_ids: set[str], course_type: str = ""
+) -> NonAttainmentRow:
     draggers = [c for c in exp.contributions if c.drag_scaled > 0]
     total_drag = sum(c.drag_scaled for c in draggers)
     if draggers and total_drag > 0:
@@ -170,11 +185,17 @@ def _po_row(exp: POExplanation, suggestion, missed_co_ids: set[str]) -> NonAttai
         indirect="",
         main_cause=main_cause,
         loss_breakdown=breakdown,
+        slab=slab(exp.scaled),
+        severity=severity(exp.scaled),
+        reason_code=REASON_CODES.get(suggestion.reason_id, "") if suggestion else "",
         assumed_reason=reason.label if reason else "",
         assumption=reason.description if reason else "",
         decision_path=" → ".join(suggestion.decision_path) if suggestion else "",
         cheapest_fix=fix,
-        suggested_actions=" | ".join(suggestion.actions) if suggestion else "",
+        action_codes=", ".join(c for c, _ in actions_for(suggestion.reason_id, course_type)) if suggestion else "",
+        suggested_actions=(
+            " | ".join(t for _, t in actions_for(suggestion.reason_id, course_type)) if suggestion else ""
+        ),
     )
 
 
@@ -182,16 +203,20 @@ def build_non_attainment_report(
     diagnosis: CourseDiagnosis,
     config: WeightConfig,
     direct_by_co: dict[str, float],
+    course_type: str = "",
 ) -> list[NonAttainmentRow]:
     """One row per missed CO, then per missed PO. Empty when everything is met."""
     suggestions = suggest_for_course(diagnosis)
     rows = [
-        _co_row(exp, config, suggestions.get(("CO", exp.co_id)), direct_by_co.get(exp.co_id, 0.0))
+        _co_row(
+            exp, config, suggestions.get(("CO", exp.co_id)), direct_by_co.get(exp.co_id, 0.0), course_type
+        )
         for exp in diagnosis.missed_cos
     ]
     missed_ids = {e.co_id for e in diagnosis.missed_cos}
     rows += [
-        _po_row(exp, suggestions.get(("PO", exp.po_id)), missed_ids) for exp in diagnosis.missed_pos
+        _po_row(exp, suggestions.get(("PO", exp.po_id)), missed_ids, course_type)
+        for exp in diagnosis.missed_pos
     ]
     return rows
 
