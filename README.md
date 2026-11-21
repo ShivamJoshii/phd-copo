@@ -457,6 +457,21 @@ The diagnosis says *where* a miss comes from; the action-plan layer says *why*
   labelled dataset quickly. Without scikit-learn everything degrades
   gracefully to the expert tree (`tests/test_action_plan.py`).
 
+### Reason for non-attainment report (`copo_mapper/non_attainment.py`)
+
+Whenever the final output says a CO or PO was **not achieved**, Stage 2 now
+writes `non_attainment_reasons.csv` (CLI and app download) with one row per
+missed outcome, and the app shows it under *Reason for non-attainment*:
+
+- **Where the marks were lost (exact):** each input's weighted shortfall below
+  the required level (target / 3) — Internal and External (together the Direct
+  side) and Indirect — as values and % of the loss. For a PO, the missed COs
+  that drag it down most, by mapping weight.
+- **Assumed reason + the assumption behind it:** from the expert decision tree,
+  with the exact decision path. These are assumptions for faculty to confirm or
+  override; the confirmed labels train the supervised decision tree.
+- **Cheapest single fix** and the suggested CQI actions.
+
 ### Systemic drivers (`copo_mapper/ml_drivers.py`)
 
 The interpretable, small-data ML layer. As you analyse multiple courses in the
