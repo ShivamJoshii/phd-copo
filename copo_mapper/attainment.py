@@ -215,7 +215,9 @@ def _write_attainment_outputs(
     po_results: list[POAttainmentResult],
     config: WeightConfig,
     out_dir: str,
+    mapping: dict[str, dict[str, int]] | None = None,
 ) -> dict[str, Path]:
+    mapping = mapping or {}
     course_summary = summarize_course(co_results, po_results)
 
     output_dir = Path(out_dir)
@@ -262,7 +264,20 @@ def _write_attainment_outputs(
 
     summary_path.write_text(json.dumps(course_summary, indent=2))
 
+    # Why each missed CO / PO was not achieved (lazy import: diagnostics -> attainment).
+    from .diagnostics import diagnose_course
+    from .non_attainment import build_non_attainment_report, write_report
+
+    diagnosis = diagnose_course(co_results, po_results, mapping, config)
+    reasons_path = write_report(
+        build_non_attainment_report(
+            diagnosis, config, {r.co_id: r.direct_attainment for r in co_results}
+        ),
+        output_dir / "non_attainment_reasons.csv",
+    )
+
     return {
+        "non_attainment_reasons": reasons_path,
         "co_summary": co_path,
         "po_summary": po_path,
         "target_achievement": target_path,
@@ -278,7 +293,7 @@ def run_attainment_analysis_from_objects(
 ) -> dict[str, Path]:
     co_results = compute_co_attainment(co_inputs, config)
     po_results = compute_po_attainment(co_results, mapping, config)
-    return _write_attainment_outputs(co_results, po_results, config, out_dir)
+    return _write_attainment_outputs(co_results, po_results, config, out_dir, mapping)
 
 
 def run_attainment_analysis(

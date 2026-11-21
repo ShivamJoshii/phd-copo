@@ -24,6 +24,7 @@ from copo_mapper.attainment import (
     run_attainment_analysis_from_objects,
 )
 from copo_mapper.diagnostics import diagnose_course
+from copo_mapper.non_attainment import build_non_attainment_report, report_to_csv
 from copo_mapper.action_plan import (
     MIN_TRAIN_SAMPLES,
     REASON_ORDER,
@@ -615,6 +616,45 @@ def _render_mapping_review(predicted, reviewed, po_ids: list[str], pair_rows: li
         st.caption("Unsaved changes: Stage 2 still uses the last saved review until you click Save review.")
 
 
+def _render_non_attainment(rows) -> None:
+    """Why each missed CO / PO was not achieved, from Internal / External / Indirect."""
+    st.markdown("### Reason for non-attainment")
+    if not rows:
+        st.success("Every CO and PO reached its target — no non-attainment to explain.")
+        return
+    st.caption(
+        "Where the marks were lost is exact arithmetic (each input's weighted shortfall "
+        "below the required level). The reason is an assumption from the decision tree, "
+        "shown with the evidence it rests on, for faculty to confirm or override below."
+    )
+    for r in rows:
+        with st.expander(
+            f"❌ {r.level} {r.outcome_id}: {r.attained:.2f} vs target {r.target:.2f} "
+            f"(gap {r.gap:.2f}) — {r.assumed_reason}"
+        ):
+            if r.level == "CO":
+                st.write(
+                    f"**Inputs:** Internal {r.internal} · External {r.external} · "
+                    f"Direct {r.direct} · Indirect {r.indirect}"
+                )
+            st.write(f"**Main cause:** {r.main_cause}")
+            st.write(f"**Loss by input:** {r.loss_breakdown}")
+            st.write(f"**Assumed reason:** {r.assumed_reason}")
+            st.write(f"**Assumption:** {r.assumption}")
+            st.write(f"**Cheapest single fix:** {r.cheapest_fix}")
+            st.write("**Suggested actions:**")
+            for action in r.suggested_actions.split(" | "):
+                st.write(f"- {action}")
+            st.caption("Decision path: " + r.decision_path)
+    st.download_button(
+        "Export Non-Attainment Reasons CSV",
+        data=report_to_csv(rows),
+        file_name="non_attainment_reasons.csv",
+        mime="text/csv",
+        key="dl_non_attainment",
+    )
+
+
 def _render_diagnosis(diagnosis) -> None:
     """Render the deterministic root-cause analysis for missed CO/PO targets."""
     st.markdown("### Why did targets miss? (root-cause diagnosis)")
@@ -1081,6 +1121,9 @@ def _attainment_tab() -> None:
         co_results = compute_co_attainment(co_inputs, config)
         po_results = compute_po_attainment(co_results, mapping, config)
         diagnosis = diagnose_course(co_results, po_results, mapping, config)
+        st.session_state["non_attainment_rows"] = build_non_attainment_report(
+            diagnosis, config, {r.co_id: r.direct_attainment for r in co_results}
+        )
 
         # Accumulate CO observations across analysed courses for systemic
         # (cross-course) driver analysis. Keyed by course id so re-running a
@@ -1113,6 +1156,8 @@ def _attainment_tab() -> None:
 
     st.markdown("### Course Summary")
     st.json(st.session_state["course_summary"])
+
+    _render_non_attainment(st.session_state.get("non_attainment_rows", []))
 
     if "diagnosis" in st.session_state:
         _render_diagnosis(st.session_state["diagnosis"])
