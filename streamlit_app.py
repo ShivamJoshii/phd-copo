@@ -23,9 +23,27 @@ from copo_mapper.attainment import (
     load_mapping_matrix,
     run_attainment_analysis_from_objects,
 )
+from copo_mapper import cqi_learning, store as cqi_store
+from copo_mapper.cqi_rules import (
+    ACTION_CATALOG,
+    COURSE_TYPES,
+    REASON_ACTION_CODES,
+    REASON_CODES,
+    Context,
+    action_label,
+    actions_for,
+    rule_table_csv,
+    severity,
+    slab,
+)
+from copo_mapper.demo_data import generate_demo_rows
+from copo_mapper.mapping_eval import labelled_pairs_from_review
+from copo_mapper.features import detect_bloom, token_set
+from copo_mapper.preprocess import normalize_text
 from copo_mapper.diagnostics import diagnose_course
 from copo_mapper.non_attainment import build_non_attainment_report, report_to_csv
 from copo_mapper.action_plan import (
+    ActionPlanRecord,
     MIN_TRAIN_SAMPLES,
     REASON_ORDER,
     REASON_TAXONOMY,
@@ -483,6 +501,17 @@ def _mapping_tab() -> None:
             file_name="matrix.csv",
             mime="text/csv",
         )
+    st.download_button(
+        "Export training labels CSV (for scripts/train_mapper.py)",
+        data=_csv_from_rows(
+            labelled_pairs_from_review(annotated, str(st.session_state.get("cqi_course_id") or "course"))
+        ),
+        file_name="labelled_pairs.csv",
+        mime="text/csv",
+        help="The reviewed matrix in long format: one row per CO-PO pair with the final level. "
+        "Collect these across courses to train and test the DistilBERT mapper.",
+        key="dl_training_labels",
+    )
     with c3:
         st.download_button(
             "Export Faculty Overrides CSV",
@@ -639,12 +668,14 @@ def _render_non_attainment(rows) -> None:
                 )
             st.write(f"**Main cause:** {r.main_cause}")
             st.write(f"**Loss by input:** {r.loss_breakdown}")
-            st.write(f"**Assumed reason:** {r.assumed_reason}")
+            st.write(f"**Severity:** slab {r.slab}. {r.severity}")
+            st.write(f"**Assumed reason:** {r.reason_code} {r.assumed_reason}")
             st.write(f"**Assumption:** {r.assumption}")
             st.write(f"**Cheapest single fix:** {r.cheapest_fix}")
             st.write("**Suggested actions:**")
-            for action in r.suggested_actions.split(" | "):
-                st.write(f"- {action}")
+            codes = r.action_codes.split(", ")
+            for i, action in enumerate(r.suggested_actions.split(" | ")):
+                st.write(f"- **{codes[i] if i < len(codes) else ''}** {action}")
             st.caption("Decision path: " + r.decision_path)
     st.download_button(
         "Export Non-Attainment Reasons CSV",
@@ -710,6 +741,83 @@ def _render_diagnosis(diagnosis) -> None:
                     )
 
 
+def _db_rows(include_demo: bool = True) -> list[dict]:
+    """All CQI records from the SQLite store (empty list if it cannot be read)."""
+    try:
+        conn = cqi_store.connect()
+        try:
+            return cqi_store.fetch_rows(conn, include_demo=include_demo)
+        finally:
+            conn.close()
+    except Exception as err:  # noqa: BLE001 - never let storage break the analysis UI
+        st.warning(f"CQI database unavailable: {err}")
+        return []
+
+
+def _db_faculty_records(rows: list[dict]) -> list:
+    """Faculty-labelled CO rows from the database as training records."""
+    out = []
+    for r in rows:
+        if r.get("level") != "CO" or r.get("is_demo") or not r.get("faculty_reason") or r.get("ma") is None:
+            continue
+        out.append(
+            ActionPlanRecord(
+                course_id=r["course_id"],
+                level="CO",
+                outcome_id=r["outcome_id"],
+                ma=r["ma"],
+                ea=r["ea"],
+                indirect=r["indirect"],
+                final=float(r["final"] or 0.0),
+                target=float(r["target"] or 0.0),
+                gap=float(r["gap"] or 0.0),
+                weakest=r.get("weakest") or "",
+                suggested_reason=r.get("rule_reason") or "",
+                reason=r["faculty_reason"],
+                reasoning_text=r.get("reasoning_text") or "",
+                action_plan=r.get("action_plan") or "",
+                academic_year=r["academic_year"],
+                semester=r["semester"],
+                course_type=r.get("course_type") or "",
+                bloom_level=r.get("bloom_level") or "",
+                map_strength=r.get("map_strength"),
+                class_size=r.get("class_size"),
+                prev_attained=cqi_learning.prev_attained(rows, r["course_id"], r["outcome_id"], r),
+                action_code=r.get("action_code") or "",
+                responsible=r.get("responsible") or "",
+                review_date=r.get("review_date") or "",
+            )
+        )
+    return out
+
+
+def _run_context(level: str, outcome_id: str, course_label: str, db_rows: list[dict]) -> dict:
+    """Term key + context fields for one outcome of the current Stage 2 run."""
+    run = st.session_state.get("stage2_run", {})
+    term = {"academic_year": run.get("academic_year", ""), "semester": run.get("semester", "")}
+    prev = None
+    if level == "CO":
+        prev = cqi_learning.prev_attained(db_rows, course_label, outcome_id, term)
+    return {
+        **term,
+        "course_type": run.get("course_type", ""),
+        "class_size": run.get("class_size"),
+        "bloom_level": run.get("bloom_by_co", {}).get(outcome_id, "") if level == "CO" else "",
+        "map_strength": run.get("map_by_co", {}).get(outcome_id) if level == "CO" else None,
+        "prev_attained": prev,
+    }
+
+
+def _context_of(extra: dict) -> Context:
+    return Context(
+        course_type=extra.get("course_type", ""),
+        bloom_level=extra.get("bloom_level", ""),
+        map_strength=extra.get("map_strength"),
+        class_size=extra.get("class_size"),
+        prev_attained=extra.get("prev_attained"),
+    )
+
+
 def _reason_selectbox(key: str, default_reason: str) -> str:
     options = REASON_ORDER
     labels = {rid: REASON_TAXONOMY[rid].label for rid in options}
@@ -728,16 +836,20 @@ def _save_action_plan_record(record) -> None:
     st.session_state["action_plan_records"] = merge_records(existing, [record])
 
 
-def _render_one_action_plan(exp, level: str, course_label: str, suggestion, ml_model) -> None:
+def _render_one_action_plan(
+    exp, level: str, course_label: str, suggestion, ml_model, db_rows: list[dict], followups
+) -> None:
     outcome_id = exp.co_id if level == "CO" else exp.po_id
     key_base = f"ap_{course_label}_{level}_{outcome_id}"
+    extra = _run_context(level, outcome_id, course_label, db_rows)
+    course_type = extra["course_type"]
     with st.expander(f"📋 {outcome_id} — {REASON_TAXONOMY[suggestion.reason_id].label}"):
         st.markdown("**Decision path (expert tree):**")
         for step in suggestion.decision_path:
             st.write(f"→ {step}")
 
         if ml_model is not None and level == "CO":
-            predicted = predict_reason(ml_model, exp)
+            predicted = predict_reason(ml_model, exp, _context_of(extra))
             if predicted is not None:
                 reason_id, probability = predicted
                 agrees = reason_id == suggestion.reason_id
@@ -756,12 +868,44 @@ def _render_one_action_plan(exp, level: str, course_label: str, suggestion, ml_m
             "internal Q3 mapped to this CO was above Bloom level taught.",
             key=f"{key_base}_why",
         )
-        default_actions = "\n".join(f"- {a}" for a in REASON_TAXONOMY[reason_id].actions)
+        if level == "CO" and extra["prev_attained"] is not None:
+            st.caption(f"Previous offering of this CO attained {extra['prev_attained']:.2f}.")
+        if level == "CO":
+            query = {
+                "ma": exp.components.get("MA"), "ea": exp.components.get("EA"),
+                "indirect": exp.components.get("Indirect"), "course_type": course_type,
+                "bloom_level": extra["bloom_level"],
+            }
+            recs = cqi_learning.recommend_actions(query, followups)
+            if recs:
+                st.caption(
+                    "📚 In similar past cases: "
+                    + "; ".join(
+                        f"{action_label(r.action)} improved {r.improved}/{r.similar_cases} "
+                        f"(avg {r.mean_change:+.2f})"
+                        for r in recs[:3]
+                    )
+                )
+        chosen_codes = st.multiselect(
+            "Action code(s)",
+            options=list(ACTION_CATALOG),
+            default=list(REASON_ACTION_CODES.get(reason_id, ("A99",))),
+            format_func=action_label,
+            key=f"{key_base}_codes_{reason_id}",
+        )
+        default_actions = "\n".join(
+            f"- {ACTION_CATALOG[c].text(course_type)}" for c in chosen_codes
+        )
         action_plan = st.text_area(
             "Action plan (how will it be fixed?)",
             value=default_actions,
-            key=f"{key_base}_plan_{reason_id}",
+            key=f"{key_base}_plan_{reason_id}_{'-'.join(chosen_codes)}",
         )
+        f1, f2 = st.columns(2)
+        with f1:
+            responsible = st.text_input("Responsible faculty", key=f"{key_base}_resp")
+        with f2:
+            review_date = st.text_input("Review date", placeholder="YYYY-MM-DD", key=f"{key_base}_review")
         if st.button("Save reasoning & action plan", key=f"{key_base}_save"):
             maker = record_from_co if level == "CO" else record_from_po
             record = maker(
@@ -771,6 +915,10 @@ def _render_one_action_plan(exp, level: str, course_label: str, suggestion, ml_m
                 reason=reason_id,
                 reasoning_text=reasoning_text,
                 action_plan=action_plan,
+                action_code=", ".join(chosen_codes),
+                responsible=responsible,
+                review_date=review_date,
+                **extra,
             )
             _save_action_plan_record(record)
             st.success(f"Recorded {level} {outcome_id} ({REASON_TAXONOMY[reason_id].label}).")
@@ -788,10 +936,17 @@ def _render_action_plans(diagnosis, course_label: str) -> None:
 
     suggestions = suggest_for_course(diagnosis)
     records = st.session_state.get("action_plan_records", [])
+    db_rows = _db_rows()
+    real_rows = [r for r in db_rows if not r.get("is_demo")]
+    include_demo = st.session_state.get("cqi_include_demo", True)
+    followups = cqi_learning.link_outcomes(db_rows if include_demo else real_rows)
 
     # Learned tree: bootstrapped from expert-rule exemplars until enough
-    # faculty labels exist, then trained on faculty labels alone.
-    ml_model, ml_message = train_reason_tree(records)
+    # faculty labels exist, then trained on faculty labels alone. Labels saved
+    # in the CQI database in earlier sessions count too (demo rows never do).
+    training_records = merge_records(_db_faculty_records(real_rows), records)
+    ml_model, ml_message = train_reason_tree(training_records)
+    st.session_state["stage2_ml_model"] = ml_model
 
     if not suggestions:
         st.success("No missed outcomes — nothing needs an action plan for this course.")
@@ -812,6 +967,8 @@ def _render_action_plans(diagnosis, course_label: str) -> None:
                 if exp is None:
                     continue
                 maker = record_from_co if level == "CO" else record_from_po
+                extra = _run_context(level, outcome_id, course_label, db_rows)
+                acts = actions_for(suggestion.reason_id, extra["course_type"])
                 new_records.append(
                     maker(
                         exp,
@@ -819,7 +976,9 @@ def _render_action_plans(diagnosis, course_label: str) -> None:
                         suggested_reason=suggestion.reason_id,
                         reason=suggestion.reason_id,
                         reasoning_text="; ".join(suggestion.decision_path),
-                        action_plan="\n".join(f"- {a}" for a in suggestion.actions),
+                        action_plan="\n".join(f"- {text}" for _, text in acts),
+                        action_code=", ".join(code for code, _ in acts),
+                        **extra,
                     )
                 )
             st.session_state["action_plan_records"] = merge_records(records, new_records)
@@ -829,7 +988,9 @@ def _render_action_plans(diagnosis, course_label: str) -> None:
         for (level, outcome_id), suggestion in suggestions.items():
             exp = missed_cos.get(outcome_id) if level == "CO" else missed_pos.get(outcome_id)
             if exp is not None:
-                _render_one_action_plan(exp, level, course_label, suggestion, ml_model)
+                _render_one_action_plan(
+                    exp, level, course_label, suggestion, ml_model, db_rows, followups
+                )
 
     st.markdown("**Recorded action plans**")
     if records:
@@ -843,8 +1004,11 @@ def _render_action_plans(diagnosis, course_label: str) -> None:
                     "suggested": REASON_TAXONOMY.get(
                         r.suggested_reason, REASON_TAXONOMY["other"]
                     ).label,
+                    "actions": r.action_code,
                     "reasoning": (r.reasoning_text or "")[:80],
                     "action plan": (r.action_plan or "")[:80],
+                    "responsible": r.responsible,
+                    "review": r.review_date,
                 }
                 for r in records
             ],
@@ -896,10 +1060,71 @@ def _render_action_plans(diagnosis, course_label: str) -> None:
                 )
             )
             st.caption(
-                "Learned rules (features: MA/EA/Indirect attainment, final, gap, and "
-                "which input is weakest). Every prediction follows these branches:"
+                "Learned rules (features: MA/EA/Indirect attainment, final, gap, which input is "
+                "weakest, plus context: course type, Bloom level, mapping strength, class size, "
+                "previous attainment; -1 = unknown). Every prediction follows these branches:"
             )
             st.code(ml_model.rules_text, language="text")
+
+
+def _render_save_run() -> None:
+    """Persist the current Stage 2 run (all COs/POs + faculty decisions) to SQLite."""
+    run = st.session_state.get("stage2_run")
+    diagnosis = st.session_state.get("diagnosis")
+    if not run or diagnosis is None:
+        return
+    course_label = st.session_state.get("diagnosis_course", "course")
+    st.markdown("### Save to the CQI database")
+    st.caption(
+        f"Saves every CO and PO of **{course_label}**, {run['academic_year']} semester "
+        f"{run['semester']}, with the reasons and actions recorded above. Next time this "
+        "course is run, the app compares the results and marks each action as worked or not."
+    )
+    if not run["academic_year"] or not run["semester"]:
+        st.warning("Enter the academic year and semester under Course details, then run again.")
+        return
+    if st.button("💾 Save this run to the CQI database", key="save_run_db"):
+        suggestions = suggest_for_course(diagnosis)
+        ml_model = st.session_state.get("stage2_ml_model")
+        db_rows = _db_rows()
+        ml_reasons = {}
+        if ml_model is not None:
+            for exp in diagnosis.missed_cos:
+                extra = _run_context("CO", exp.co_id, course_label, db_rows)
+                predicted = predict_reason(ml_model, exp, _context_of(extra))
+                if predicted is not None:
+                    ml_reasons[exp.co_id] = predicted[0]
+        rows = cqi_store.rows_from_run(
+            academic_year=run["academic_year"],
+            semester=run["semester"],
+            course_id=course_label,
+            course_type=run["course_type"],
+            class_size=run["class_size"],
+            co_results=run["co_results"],
+            po_results=run["po_results"],
+            diagnosis=diagnosis,
+            config=run["config"],
+            suggestions=suggestions,
+            bloom_by_co=run["bloom_by_co"],
+            map_strength_by_co=run["map_by_co"],
+            ml_reasons=ml_reasons,
+            action_records=st.session_state.get("action_plan_records", []),
+        )
+        try:
+            conn = cqi_store.connect()
+            try:
+                saved = cqi_store.upsert_rows(conn, rows)
+            finally:
+                conn.close()
+        except Exception as err:  # noqa: BLE001
+            st.error(f"Could not save: {err}")
+        else:
+            missed = sum(1 for r in rows if not r["achieved"])
+            labelled = sum(1 for r in rows if r["faculty_reason"])
+            st.success(
+                f"Saved {saved} outcome(s): {missed} not attained, {labelled} with a recorded "
+                "reason/action. See the CQI History tab."
+            )
 
 
 def _render_systemic_drivers() -> None:
@@ -1055,6 +1280,23 @@ def _attainment_tab() -> None:
         mime="text/csv",
     )
 
+    st.markdown("### Course details")
+    st.caption(
+        "These identify the run in the CQI database (year + semester + course + CO) and give "
+        "the reasoning its context: practical courses get lab-specific actions."
+    )
+    k1, k2, k3, k4, k5 = st.columns(5)
+    with k1:
+        st.text_input("Course code", value="Course1", key="cqi_course_id")
+    with k2:
+        st.text_input("Academic year", value="2026-27", key="cqi_year")
+    with k3:
+        st.text_input("Semester", value="1", key="cqi_semester")
+    with k4:
+        st.selectbox("Course type", list(COURSE_TYPES), key="cqi_course_type")
+    with k5:
+        st.number_input("Class size", min_value=0, value=60, step=1, key="cqi_class_size")
+
     st.markdown("### Weights & Target")
     col_a, col_b, col_c = st.columns(3)
     with col_a:
@@ -1121,14 +1363,44 @@ def _attainment_tab() -> None:
         co_results = compute_co_attainment(co_inputs, config)
         po_results = compute_po_attainment(co_results, mapping, config)
         diagnosis = diagnose_course(co_results, po_results, mapping, config)
+        course_type = str(st.session_state.get("cqi_course_type") or "")
         st.session_state["non_attainment_rows"] = build_non_attainment_report(
-            diagnosis, config, {r.co_id: r.direct_attainment for r in co_results}
+            diagnosis, config, {r.co_id: r.direct_attainment for r in co_results}, course_type
         )
+
+        # Context features: Bloom level of each CO (from Step 1 texts) and the
+        # mean strength of its mapping row.
+        co_texts = {r["co_id"]: r["co_text"] for r in st.session_state.get("pair_rows", [])}
+        bloom_by_co = {}
+        for r in co_results:
+            if r.co_id in co_texts:
+                norm = normalize_text(co_texts[r.co_id])
+                bloom_by_co[r.co_id] = detect_bloom(token_set(norm), text=norm)
+        map_by_co = {}
+        for co_id, cells in mapping.items():
+            strengths = [int(v) for v in cells.values() if int(v or 0) > 0]
+            if strengths:
+                map_by_co[co_id] = round(sum(strengths) / len(strengths), 2)
+        class_size = int(st.session_state.get("cqi_class_size") or 0) or None
+        st.session_state["stage2_run"] = {
+            "academic_year": str(st.session_state.get("cqi_year") or "").strip(),
+            "semester": str(st.session_state.get("cqi_semester") or "").strip(),
+            "course_type": course_type,
+            "class_size": class_size,
+            "co_results": co_results,
+            "po_results": po_results,
+            "config": config,
+            "bloom_by_co": bloom_by_co,
+            "map_by_co": map_by_co,
+        }
 
         # Accumulate CO observations across analysed courses for systemic
         # (cross-course) driver analysis. Keyed by course id so re-running a
         # course replaces its earlier rows instead of double-counting.
-        course_label = str(st.session_state.get("stage2_course_id") or "course").strip() or "course"
+        course_label = (
+            str(st.session_state.get("cqi_course_id") or st.session_state.get("stage2_course_id") or "course").strip()
+            or "course"
+        )
         store = dict(st.session_state.get("co_observations_by_course", {}))
         store[course_label] = [
             observation_from_co(r, config, course_id=course_label) for r in co_results
@@ -1165,6 +1437,8 @@ def _attainment_tab() -> None:
             st.session_state["diagnosis"],
             st.session_state.get("diagnosis_course", "course"),
         )
+
+    _render_save_run()
 
     _render_systemic_drivers()
 
@@ -1663,6 +1937,252 @@ def _calibration_tab() -> None:
         )
 
 
+def _reason_label(reason_id: str) -> str:
+    if not reason_id:
+        return ""
+    reason = REASON_TAXONOMY.get(reason_id)
+    return f"{REASON_CODES.get(reason_id, '')} {reason.label}".strip() if reason else reason_id
+
+
+def _history_tab() -> None:
+    st.subheader("CQI History & Learning")
+    st.write(
+        "Every saved run lands here. Once the same course is saved for a later year, each "
+        "earlier reason and action is checked against what happened next, and the app learns "
+        "which actions work."
+    )
+
+    try:
+        conn = cqi_store.connect()
+    except Exception as err:  # noqa: BLE001
+        st.error(f"CQI database unavailable: {err}")
+        return
+    try:
+        info = cqi_store.counts(conn)
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Saved runs (course × term)", info["runs"])
+        c2.metric("Real records", info["real"])
+        c3.metric("Demo records", info["demo"])
+        st.caption(f"Database file: `{cqi_store.db_path()}`")
+
+        with st.expander("Demo data, backup and restore"):
+            st.write(
+                "Demo data is **simulated** (16 courses × 3 years, course ids start with `DEMO-`). "
+                "It shows the learning loop working before real history exists; it is not evidence "
+                "about real teaching."
+            )
+            b1, b2 = st.columns(2)
+            with b1:
+                if st.button("Load demo data", key="demo_load"):
+                    n = cqi_store.upsert_rows(conn, generate_demo_rows())
+                    st.success(f"Loaded {n} demo records.")
+                    st.rerun()
+            with b2:
+                if st.button("Remove demo data", key="demo_clear"):
+                    n = cqi_store.delete_demo(conn)
+                    st.success(f"Removed {n} demo records.")
+                    st.rerun()
+            st.checkbox("Include demo data in the analysis below", value=True, key="cqi_include_demo")
+            st.download_button(
+                "Download full database backup (CSV)",
+                data=cqi_store.export_csv(cqi_store.fetch_rows(conn)),
+                file_name="cqi_database_backup.csv",
+                mime="text/csv",
+                key="db_backup",
+            )
+            restore = st.file_uploader("Restore from a backup CSV", type=["csv"], key="db_restore")
+            if restore is not None and st.session_state.get("_db_restore_fid") != restore.file_id:
+                n = cqi_store.import_csv(conn, decode_text_bytes(restore.getvalue(), source=restore.name or "backup"))
+                st.session_state["_db_restore_fid"] = restore.file_id
+                st.success(f"Restored {n} record(s).")
+                st.rerun()
+
+        rows = cqi_store.fetch_rows(conn, include_demo=st.session_state.get("cqi_include_demo", True))
+    finally:
+        conn.close()
+
+    if not rows:
+        st.info("No records yet. Save a run from Step 2, or load the demo data above.")
+        st.download_button(
+            "Download the reference rule table (128 combinations, CSV)",
+            data=rule_table_csv(),
+            file_name="cqi_rule_table.csv",
+            mime="text/csv",
+            key="rule_table_empty",
+        )
+        return
+
+    followups = cqi_learning.link_outcomes(rows)
+    checked = cqi_learning.known(followups)
+    pending = [f for f in followups if f.verdict == "pending"]
+
+    # ---- 1. feedback loop
+    st.markdown("### 1. Did the assumptions hold? (feedback loop)")
+    if not checked:
+        st.info(
+            f"{len(pending)} missed CO(s) are waiting for the next offering of their course. "
+            "Save the same course for a later year to close the loop."
+        )
+    else:
+        supported = sum(1 for f in checked if f.improved)
+        m1, m2, m3 = st.columns(3)
+        m1.metric("Misses with a known follow-up", len(checked))
+        m2.metric("Improved after the action", f"{supported / len(checked):.0%}")
+        m3.metric("Waiting for next offering", len(pending))
+        st.caption(
+            "Supported = attainment of the same CO rose by more than "
+            f"{cqi_learning.IMPROVE_EPS:.2f} at the next offering. That is evidence for the "
+            "reason, not proof: cohorts change from year to year."
+        )
+        st.dataframe(
+            [
+                {**r, "reason": _reason_label(r["reason"])}
+                for r in cqi_learning.assumption_scorecard(followups)
+            ],
+            width="stretch",
+        )
+        with st.expander("Every checked case"):
+            st.dataframe(
+                [
+                    {
+                        "course": f.row["course_id"],
+                        "CO": f.row["outcome_id"],
+                        "year": f.row["academic_year"],
+                        "reason": _reason_label(f.reason),
+                        "action": ", ".join(f.actions),
+                        "attained": f.row["scaled"],
+                        "next": f.next_row["scaled"],
+                        "change": f.delta,
+                        "verdict": f.verdict,
+                        "target met next": "Y" if f.resolved else "N",
+                    }
+                    for f in checked
+                ],
+                width="stretch",
+            )
+
+    # ---- 2. what works
+    st.markdown("### 2. Which actions work? (success rates and Apriori rules)")
+    scorecard = cqi_learning.action_scorecard(followups)
+    if scorecard:
+        st.dataframe(
+            [
+                {**r, "reason": _reason_label(r["reason"]), "action": action_label(r["action"])}
+                for r in scorecard
+            ],
+            width="stretch",
+        )
+        rules = cqi_learning.mine_rules(followups)
+        if rules:
+            st.caption(
+                "Association rules (Apriori). Confidence = share of cases matching the left side "
+                "that ended as the right side; lift above 1 = better than the overall rate."
+            )
+            st.dataframe(
+                [
+                    {
+                        "rule": r.text(),
+                        "cases": r.cases,
+                        "support": r.support,
+                        "confidence": r.confidence,
+                        "lift": r.lift,
+                    }
+                    for r in rules[:25]
+                ],
+                width="stretch",
+            )
+        else:
+            st.info("Not enough repeated cases yet for association rules (needs 3+ per pattern).")
+    else:
+        st.info("No actions with a known outcome yet.")
+
+    # ---- 3. recommendations for open misses
+    st.markdown("### 3. Recommended actions for open misses (k-nearest neighbours)")
+    model, model_msg = cqi_learning.train_next_model(followups)
+    if pending and checked:
+        rec_rows = []
+        for f in pending[:40]:
+            recs = cqi_learning.recommend_actions(f.row, followups)
+            best = recs[0] if recs else None
+            planned = list(f.actions) or cqi_learning.default_actions(f.reason)
+            rec_rows.append(
+                {
+                    "course": f.row["course_id"],
+                    "CO": f.row["outcome_id"],
+                    "year": f.row["academic_year"],
+                    "attained": f.row["scaled"],
+                    "target": f.row["target"],
+                    "reason": _reason_label(f.reason),
+                    "planned action": ", ".join(planned),
+                    "best in similar cases": action_label(best.action) if best else "",
+                    "worked": f"{best.improved}/{best.similar_cases}" if best else "",
+                    "predicted next (planned)": (
+                        cqi_learning.predict_next(model, f.row, planned) if model else None
+                    ),
+                    "predicted next (best)": (
+                        cqi_learning.predict_next(model, f.row, [best.action]) if model and best else None
+                    ),
+                }
+            )
+        st.dataframe(rec_rows, width="stretch")
+    else:
+        st.info("Needs at least one open miss and one past miss with a known follow-up.")
+
+    # ---- 4. prediction model
+    st.markdown("### 4. Next-offering prediction (Random Forest)")
+    st.write(model_msg)
+    if model is not None:
+        st.caption(
+            "Most influential inputs: "
+            + ", ".join(f"{name} ({weight:.0%})" for name, weight in model.importances[:5])
+        )
+
+    # ---- 5. patterns
+    st.markdown("### 5. Failure patterns (K-Means)")
+    patterns, pattern_msg = cqi_learning.failure_patterns(rows)
+    st.write(pattern_msg)
+    if patterns:
+        st.dataframe(
+            [
+                {
+                    "pattern": p.cluster,
+                    "COs": p.size,
+                    "internal": p.ma,
+                    "external": p.ea,
+                    "indirect": p.indirect,
+                    "most common reason": _reason_label(p.top_reason),
+                    "share": f"{p.top_reason_share:.0%}",
+                    "note": p.note,
+                }
+                for p in patterns
+            ],
+            width="stretch",
+        )
+
+    # ---- 6. report
+    st.markdown("### 6. Reason & Action Taken report")
+    report = cqi_learning.cqi_report_rows(rows, followups)
+    st.dataframe(report, width="stretch")
+    r1, r2 = st.columns(2)
+    with r1:
+        if report:
+            st.download_button(
+                "Download CQI Action Plan report (CSV)",
+                data=_csv_from_rows(report),
+                file_name="cqi_action_plan_report.csv",
+                mime="text/csv",
+                key="cqi_report_dl",
+            )
+    with r2:
+        st.download_button(
+            "Download the reference rule table (128 combinations, CSV)",
+            data=rule_table_csv(),
+            file_name="cqi_rule_table.csv",
+            mime="text/csv",
+            key="rule_table_dl",
+        )
+
+
 def main() -> None:
     st.set_page_config(page_title="CO-PO Mapper + Attainment UI", layout="wide")
     st.title("CO-PO Mapping & Attainment Workbench")
@@ -1671,12 +2191,13 @@ def main() -> None:
         "Each step pushes its outputs into the next."
     )
 
-    tab_map, tab_att, tab_sem, tab_prog, tab_calib = st.tabs(
+    tab_map, tab_att, tab_sem, tab_prog, tab_hist, tab_calib = st.tabs(
         [
             "Step 1: Mapping",
             "Step 2: Course Attainment",
             "Step 3: Semester",
             "Step 4: Program",
+            "CQI History",
             "Calibration",
         ]
     )
@@ -1688,6 +2209,8 @@ def main() -> None:
         _semester_tab()
     with tab_prog:
         _program_tab()
+    with tab_hist:
+        _history_tab()
     with tab_calib:
         _calibration_tab()
 

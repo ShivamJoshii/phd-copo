@@ -46,14 +46,28 @@ class NonAttainmentTest(unittest.TestCase):
         self.assertEqual(max(losses, key=losses.get), "EA")
 
     def test_external_lag_is_main_cause_and_reason(self) -> None:
-        _, rows = _report([COAttainmentInput("CO1", 0.80, 0.55, 0.80), COAttainmentInput("CO2", 0.9, 0.9, 0.9)])
+        _, rows = _report([COAttainmentInput("CO1", 0.74, 0.62, 0.74), COAttainmentInput("CO2", 0.9, 0.9, 0.9)])
         co_row = next(r for r in rows if r.level == "CO")
         self.assertEqual(co_row.outcome_id, "CO1")
+        self.assertEqual(co_row.reason_code, "R2")
+        self.assertTrue(co_row.severity)
         self.assertTrue(co_row.main_cause.startswith("External"))
         self.assertEqual(co_row.assumed_reason, "Teaching–learning method")
         self.assertIn("end-semester", co_row.assumption)
         self.assertIn("→", co_row.decision_path)
         self.assertTrue(co_row.suggested_actions)
+
+    def test_practical_course_gets_lab_actions(self) -> None:
+        co = compute_co_attainment([COAttainmentInput("CO1", 0.80, 0.52, 0.80)], CONFIG)
+        po = compute_po_attainment(co, {"CO1": {"PO1": 3}}, CONFIG)
+        diag = diagnose_course(co, po, {"CO1": {"PO1": 3}}, CONFIG)
+        direct = {r.co_id: r.direct_attainment for r in co}
+        theory = build_non_attainment_report(diag, CONFIG, direct, "Theory")[0]
+        practical = build_non_attainment_report(diag, CONFIG, direct, "Practical")[0]
+        self.assertEqual(theory.reason_code, "R3")
+        self.assertEqual(theory.action_codes, practical.action_codes)
+        self.assertNotEqual(theory.suggested_actions, practical.suggested_actions)
+        self.assertIn("lab", practical.suggested_actions.lower())
 
     def test_indirect_side_reported(self) -> None:
         _, rows = _report([COAttainmentInput("CO1", 0.75, 0.75, 0.20), COAttainmentInput("CO2", 0.9, 0.9, 0.9)])

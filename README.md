@@ -472,6 +472,56 @@ missed outcome, and the app shows it under *Reason for non-attainment*:
   override; the confirmed labels train the supervised decision tree.
 - **Cheapest single fix** and the suggested CQI actions.
 
+### CQI learning loop: database, feedback and action recommendations
+
+Everything after "why was it missed" is built to **learn from its own
+assumptions**:
+
+| Step | What | ML type | Module |
+|---|---|---|---|
+| Reason | Expert tree with 10 reasons (R1a-R8), incl. lenient internal marking (R3), borderline (R5), students overrating themselves (R7); theory/practical actions; severity by slab | Rule-based expert system | `action_plan.py`, `cqi_rules.py` |
+| Learned reason | Decision tree on faculty-confirmed reasons + context (course type, Bloom level, mapping strength, class size, previous attainment) | Supervised classification (CART), bootstrapped by distillation | `action_plan.py` |
+| Store | Every CO/PO of every saved run, keyed year + semester + course + CO | SQLite | `store.py` |
+| Feedback loop | Same CO at the next offering: improved or not, so each assumption is marked supported / not supported | Outcome labelling | `cqi_learning.link_outcomes` |
+| Recommend | Actions that were followed by improvement in the most similar past misses | k-nearest neighbours (case-based reasoning) | `cqi_learning.recommend_actions` |
+| What works | `{reason, course type, action} -> improved` with support, confidence, lift | Association rules (Apriori) | `cqi_learning.mine_rules` |
+| Patterns | Clusters of missed COs; flags clusters the rules have no name for | K-Means (k by silhouette) | `cqi_learning.failure_patterns` |
+| Predict | Next offering's attainment given a planned action, vs a "nothing changes" baseline | Random Forest regression | `cqi_learning.train_next_model` |
+
+In the app: fill **Course details** in Step 2 (course, year, semester, type,
+class size), record reasons and action codes, click **Save this run to the CQI
+database**, then open the **CQI History** tab. It shows the feedback loop,
+action success rates, Apriori rules, kNN recommendations, predictions, failure
+patterns and the **Reason & Action Taken report** (CSV, NBA CQI layout). The
+128-combination reference rule table is downloadable there too.
+
+**Storage.** One SQLite file (`COPO_DB_PATH`, default `copo_cqi.sqlite`). It
+persists on a normal computer or server. Streamlit Community Cloud wipes local
+files on redeploy, so use *Download full database backup* / *Restore* there, or
+run the app locally.
+
+**Demo data.** *Load demo data* adds 16 simulated courses over three years
+(`DEMO-` course ids, `is_demo = 1`) so the loop can be shown before real
+history exists. It is simulated: results on it test the method, they are not
+findings about real teaching. Demo rows never train the reason classifier.
+
+### Training a mapper on faculty labels (`scripts/train_mapper.py`)
+
+`copo_mapper/mapping_eval.py` gives accuracy, macro-F1, quadratic weighted
+kappa and a confusion matrix, with a split **by course**. Step 1 can export the
+reviewed matrix as `labelled_pairs.csv`; collect these across courses (1,000+
+pairs) and run, on a GPU machine or Colab:
+
+```bash
+pip install transformers torch
+python scripts/train_mapper.py --labels labelled_pairs.csv --out mapper_model
+```
+
+It reports the TF-IDF rule baseline and the fine-tuned DistilBERT on the same
+held-out courses. `docs/data_collection_template.xlsx` is the blank template
+(mapping labels, attainment inputs, action-taken records, codes, data
+dictionary) for collecting the data.
+
 ### Systemic drivers (`copo_mapper/ml_drivers.py`)
 
 The interpretable, small-data ML layer. As you analyse multiple courses in the
